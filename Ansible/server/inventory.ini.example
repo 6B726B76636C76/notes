@@ -1,0 +1,5 @@
+[servers]
+vpc ansible_host=192.178.24.142
+
+[servers:vars]
+ansible_ssh_common_args='-o StrictHostKeyChecking=no'

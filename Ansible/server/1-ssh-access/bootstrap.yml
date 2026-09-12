@@ -1,0 +1,125 @@
+---
+- name: Create users with individual SSH keys
+  hosts: servers
+  become: yes
+  gather_facts: yes
+
+  vars:
+    service_users:
+      - ansible
+    human_users:
+      - vaclav
+    all_users: "{{ service_users + human_users }}"
+    key_dir: "{{ lookup('env', 'HOME') }}/.ssh/bootstrap-vpc"
+
+  tasks:
+    - name: Ensure sudo is installed
+      ansible.builtin.apt:
+        name: sudo
+        state: present
+        update_cache: yes
+
+    - name: Ensure per-user key dirs exist on controller
+      delegate_to: localhost
+      become: no
+      ansible.builtin.file:
+        path: "{{ key_dir }}/{{ item }}"
+        state: directory
+        mode: '0700'
+      loop: "{{ all_users }}"
+
+    - name: Generate SSH keypair for each user
+      delegate_to: localhost
+      become: no
+      community.crypto.openssh_keypair:
+        path: "{{ key_dir }}/{{ item }}/key"
+        type: ed25519
+        comment: "{{ item }}@ansible-bootstrap"
+        state: present
+      loop: "{{ all_users }}"
+
+    - name: Read public keys
+      delegate_to: localhost
+      become: no
+      ansible.builtin.slurp:
+        src: "{{ key_dir }}/{{ item }}/key.pub"
+      register: pubkeys
+      loop: "{{ all_users }}"
+
+    - name: Create users
+      ansible.builtin.user:
+        name: "{{ item }}"
+        shell: /bin/bash
+        create_home: yes
+        state: present
+      loop: "{{ all_users }}"
+
+    - name: Grant passwordless sudo to service accounts
+      ansible.builtin.copy:
+        dest: "/etc/sudoers.d/{{ item }}"
+        content: "{{ item }} ALL=(ALL) NOPASSWD:ALL\n"
+        owner: root
+        group: root
+        mode: '0440'
+        validate: 'visudo -cf %s'
+      loop: "{{ service_users }}"
+
+    - name: Add human users to sudo group
+      ansible.builtin.user:
+        name: "{{ item }}"
+        groups: sudo
+        append: yes
+      loop: "{{ human_users }}"
+
+    - name: Install Google Authenticator PAM module
+      ansible.builtin.apt:
+        name: libpam-google-authenticator
+        state: present
+        update_cache: yes
+
+    - name: Ensure pip and pexpect are installed on target
+      ansible.builtin.apt:
+        name:
+          - python3-pexpect
+        state: present
+        update_cache: yes
+
+    - name: Generate TOTP secret for each human user
+      become: yes
+      become_user: "{{ item }}"
+      ansible.builtin.expect:
+        command: google-authenticator -t -d -r 3 -R 30 -w 3 -Q UTF8
+        responses:
+          "Do you want me to update your.*": "y"
+          "Do you want to disallow multiple uses.*": "y"
+          "By default, a new token is generated.*": "y"
+          "If the computer that you are logging into isn't hardened.*": "y"
+          "Do you want to enable rate-limiting.*": "y"
+          "Enter code from app.*": "-1"
+        timeout: 30
+      args:
+        creates: "/home/{{ item }}/.google_authenticator"
+      loop: "{{ human_users }}"
+      register: totp_results
+
+    - name: Show QR code and secret for each user
+      ansible.builtin.debug:
+        msg: "{{ item.stdout_lines }}"
+      loop: "{{ totp_results.results }}"
+      when: item.changed
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Enable TOTP for sudo via PAM
+      ansible.builtin.lineinfile:
+        path: /etc/pam.d/sudo
+        line: "auth sufficient pam_google_authenticator.so nullok"
+        insertbefore: "^@include common-auth"
+
+    - name: Add public key to each user's authorized_keys
+      ansible.posix.authorized_key:
+        user: "{{ item.item }}"
+        key: "{{ item.content | b64decode }}"
+        state: present
+        manage_dir: yes
+      loop: "{{ pubkeys.results }}"

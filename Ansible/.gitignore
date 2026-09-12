@@ -1,0 +1,3 @@
+ansible-venv
+inventory.ini
+server/1-ssh-access/host_vars/vpc.yml

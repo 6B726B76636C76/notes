@@ -1,0 +1,261 @@
+---
+- name: Harden server security (UFW, CrowdSec, SSH, auditd)
+  hosts: servers
+  become: true
+  gather_facts: true
+
+  vars:
+    my_ip: "176.20.73.20/32"
+    wg_port: 51820
+    admin_subnet: "172.16.0.0/27"      # 30 hosts
+    limited_subnet: "172.16.1.0/24"     # 254 hosts
+    http_only_subnet: "172.16.8.0/21"   # 2046 hosts
+    limited_ports: [22, 8443]
+    http_only_ports: [8443]
+    ingress_ports: [80, 443]
+    connlimit_above: 20                 # max connections per ip
+
+  tasks:
+    - name: Install UFW
+      ansible.builtin.apt:
+        name: ufw
+        state: present
+        update_cache: true
+
+    - name: Set UFW default policies
+      community.general.ufw:
+        direction: "{{ item.direction }}"
+        policy: "{{ item.policy }}"
+      loop:
+        - { direction: incoming, policy: deny }
+        - { direction: outgoing, policy: allow }
+
+    - name: Set UFW default forward policy to ACCEPT (required for Kubernetes CNI)
+      ansible.builtin.lineinfile:
+        path: /etc/default/ufw
+        regexp: '^DEFAULT_FORWARD_POLICY='
+        line: 'DEFAULT_FORWARD_POLICY="ACCEPT"'
+      notify: reload ufw
+
+    - name: Allow SSH from my IP (fallback, outside WireGuard)
+      community.general.ufw:
+        rule: allow
+        port: "22"
+        proto: tcp
+        src: "{{ my_ip }}"
+        comment: "SSH from admin IP"
+
+    - name: Allow full access for admin WireGuard group
+      community.general.ufw:
+        rule: allow
+        src: "{{ admin_subnet }}"
+        comment: "Admin WireGuard subnet - full access"
+
+    - name: Allow limited WireGuard group ports
+      community.general.ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+        src: "{{ limited_subnet }}"
+        comment: "Limited WireGuard group"
+      loop: "{{ limited_ports }}"
+
+    - name: Allow http-only WireGuard group ports
+      community.general.ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+        src: "{{ http_only_subnet }}"
+        comment: "HTTP-only WireGuard group"
+      loop: "{{ http_only_ports }}"
+
+    - name: Allow WireGuard port
+      community.general.ufw:
+        rule: allow
+        port: "{{ wg_port }}"
+        proto: udp
+        comment: "WireGuard"
+
+    - name: Rate-limit public ingress ports (HTTP/HTTPS)
+      community.general.ufw:
+        rule: limit
+        port: "{{ item }}"
+        proto: tcp
+        comment: "Rate limit public HTTP/HTTPS"
+      loop: "{{ ingress_ports }}"
+
+    - name: Add concurrent connection limit (connlimit) to UFW before.rules
+      ansible.builtin.blockinfile:
+        path: /etc/ufw/before.rules
+        marker: "# {mark} ANSIBLE MANAGED - CONNLIMIT"
+        insertbefore: "^COMMIT"
+        block: |
+          # Limit concurrent connections per IP on public HTTP/HTTPS
+          -A ufw-before-input -p tcp --dport 80  -m connlimit --connlimit-above {{ connlimit_above }} --connlimit-mask 32 -j DROP
+          -A ufw-before-input -p tcp --dport 443 -m connlimit --connlimit-above {{ connlimit_above }} --connlimit-mask 32 -j DROP
+      notify: reload ufw
+
+    - name: Enable UFW
+      community.general.ufw:
+        state: enabled
+        logging: "on"
+
+    - name: Apply kernel hardening sysctl settings
+      ansible.posix.sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        sysctl_set: true
+        state: present
+        reload: true
+      loop:
+        - { name: net.ipv4.tcp_syncookies, value: "1" }
+        - { name: net.ipv4.tcp_synack_retries, value: "2" }
+        - { name: net.ipv4.tcp_max_syn_backlog, value: "2048" }
+        - { name: net.ipv4.conf.all.rp_filter, value: "1" }
+        - { name: net.ipv4.icmp_echo_ignore_broadcasts, value: "1" }
+        - { name: net.ipv4.conf.all.accept_source_route, value: "0" }
+
+    - name: Harden SSH configuration
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      loop:
+        - { regexp: '^#?PermitRootLogin', line: 'PermitRootLogin no' }
+        - { regexp: '^#?PasswordAuthentication', line: 'PasswordAuthentication no' }
+        - { regexp: '^#?KbdInteractiveAuthentication', line: 'KbdInteractiveAuthentication no' }
+        - { regexp: '^#?PermitEmptyPasswords', line: 'PermitEmptyPasswords no' }
+      notify: restart sshd
+
+    - name: Add CrowdSec repository (official method)
+      ansible.builtin.shell: |
+        curl -s https://install.crowdsec.net | bash
+      args:
+        creates: /etc/apt/sources.list.d/crowdsec_crowdsec.list
+
+    - name: Install CrowdSec and iptables bouncer
+      ansible.builtin.apt:
+        name:
+          - crowdsec
+          - crowdsec-firewall-bouncer-iptables
+        state: present
+        update_cache: true
+
+    - name: Enable and start CrowdSec services
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        enabled: true
+        state: started
+      loop:
+        - crowdsec
+        - crowdsec-firewall-bouncer
+
+    - name: Install CrowdSec collections
+      ansible.builtin.command:
+        cmd: "cscli collections install {{ item }}"
+      loop:
+        - crowdsecurity/sshd
+        - crowdsecurity/linux
+      register: crowdsec_collections
+      changed_when: "'already exists' not in crowdsec_collections.stdout"
+      notify: restart crowdsec
+
+    - name: Install unattended-upgrades
+      ansible.builtin.apt:
+        name: unattended-upgrades
+        state: present
+        update_cache: true
+
+    - name: Configure unattended-upgrades (security only, no auto-reboot)
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/50unattended-upgrades-custom
+        content: |
+          Unattended-Upgrade::Allowed-Origins {
+              "${distro_id}:${distro_codename}-security";
+          };
+          Unattended-Upgrade::Automatic-Reboot "false";
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Enable unattended-upgrades periodic runs
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/20auto-upgrades
+        content: |
+          APT::Periodic::Update-Package-Lists "1";
+          APT::Periodic::Unattended-Upgrade "1";
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Install auditd
+      ansible.builtin.apt:
+        name:
+          - auditd
+          - audispd-plugins
+        state: present
+        update_cache: true
+
+    - name: Deploy hardened audit rules
+      ansible.builtin.copy:
+        dest: /etc/audit/rules.d/hardening.rules
+        content: |
+          -D
+          -b 8192
+          -f 1
+
+          -w /etc/passwd -p wa -k identity
+          -w /etc/group -p wa -k identity
+          -w /etc/shadow -p wa -k identity
+          -w /etc/sudoers -p wa -k identity
+          -w /etc/sudoers.d/ -p wa -k identity
+
+          -w /var/log/sudo.log -p wa -k sudo_log
+          -w /usr/bin/sudo -p x -k sudo_exec
+
+          -w /etc/ssh/sshd_config -p wa -k sshd_config
+          -w /etc/pam.d/ -p wa -k pam_config
+
+          -w /etc/crontab -p wa -k cron
+          -w /etc/cron.d/ -p wa -k cron
+          -w /var/spool/cron/ -p wa -k cron
+
+          -w /sbin/insmod -p x -k modules
+          -w /sbin/rmmod -p x -k modules
+          -w /sbin/modprobe -p x -k modules
+
+          -a always,exit -F arch=b64 -S execve -C uid!=euid -F euid=0 -k privileged
+          -a always,exit -F arch=b32 -S execve -C uid!=euid -F euid=0 -k privileged
+
+          -w /var/log/faillog -p wa -k logins
+          -w /var/log/lastlog -p wa -k logins
+        owner: root
+        group: root
+        mode: "0640"
+      notify: restart auditd
+
+    - name: Ensure auditd is enabled and running
+      ansible.builtin.systemd:
+        name: auditd
+        enabled: true
+        state: started
+
+  handlers:
+    - name: reload ufw
+      community.general.ufw:
+        state: reloaded
+
+    - name: restart sshd
+      ansible.builtin.systemd:
+        name: sshd
+        state: restarted
+
+    - name: restart crowdsec
+      ansible.builtin.systemd:
+        name: crowdsec
+        state: restarted
+
+    - name: restart auditd
+      ansible.builtin.systemd:
+        name: auditd
+        state: restarted

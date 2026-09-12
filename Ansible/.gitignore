@@ -1,4 +1,5 @@
 ansible-venv
-inventory.ini
+inventory.yaml
 server/1-ssh-access/host_vars/vpc.yml
 server/1-ssh-access/inventory.ini
+server/2-security/playbook.yml

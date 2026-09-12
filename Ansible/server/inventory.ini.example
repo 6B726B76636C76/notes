@@ -1,5 +1,17 @@
-[servers]
-vpc ansible_host=192.178.24.142
+all:
+  hosts:
+    host1:
+      ansible_host: 192.168.1.10
+    host2:
+      ansible_host: 192.168.1.11
+    host3:
+      ansible_host: 192.168.1.20
 
-[servers:vars]
-ansible_ssh_common_args='-o StrictHostKeyChecking=no'
+  children:
+    web:
+      hosts:
+        host1:
+        host2:
+    db:
+      hosts:
+        host3:

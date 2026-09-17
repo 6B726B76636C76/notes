@@ -1,0 +1,12 @@
+[Interface]
+Address = {{ peer.address }}/32
+PrivateKey = {{ peer_private_key }}
+DNS = {{ wg_dns_address }}
+MTU = {{ vpn_mtu }}
+Table = auto
+
+[Peer]
+PublicKey = {{ server_public_key }}
+Endpoint = {{ public_ip }}:{{ wg_port }}
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = {{ peer.persistent_keepalive }}

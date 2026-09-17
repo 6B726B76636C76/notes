@@ -1,0 +1,295 @@
+---
+- name: Rotate WireGuard client key
+  hosts: servers
+  become: true
+  gather_facts: false
+
+  vars_files:
+    - "{{ playbook_dir }}/../group_vars/all.yml"
+
+  tasks:
+
+    # ============================================================
+    # Validation
+    # ============================================================
+
+    - name: Validate rotation parameters
+      ansible.builtin.assert:
+        that:
+          - client_name is defined
+          - client_name | length > 0
+          - client_group is defined
+          - client_group in ['admin', 'developers', 'http_only']
+        fail_msg: >-
+          Usage:
+          -e "client_name=<name> client_group=admin|developers|http_only"
+
+    - name: Validate WireGuard peer names are unique
+      ansible.builtin.assert:
+        that:
+          - >-
+            wg_peers | map(attribute='name') | list | unique | length
+            == wg_peers | length
+        fail_msg: "WireGuard peer names must be unique."
+
+    # ============================================================
+    # Find requested peer
+    # ============================================================
+
+    - name: Find requested WireGuard peer
+      ansible.builtin.set_fact:
+        selected_peers: >-
+          {{
+            wg_peers
+            | selectattr('name', 'equalto', client_name)
+            | selectattr('group', 'equalto', client_group)
+            | list
+          }}
+
+    - name: Validate requested peer exists
+      ansible.builtin.assert:
+        that:
+          - selected_peers | length == 1
+        fail_msg: >-
+          Expected exactly one peer with:
+          name={{ client_name }}
+          group={{ client_group }}
+          Found: {{ selected_peers | length }}
+
+    - name: Set selected WireGuard peer
+      ansible.builtin.set_fact:
+        selected_peer: "{{ selected_peers[0] }}"
+
+    # ============================================================
+    # Client configuration path
+    # ============================================================
+
+    - name: Define client configuration path
+      ansible.builtin.set_fact:
+        client_config_path: >-
+          {{ playbook_dir }}/client-configs/{{ selected_peer.name }}.conf
+
+    # ============================================================
+    # Check existing client configuration
+    # ============================================================
+
+    - name: Check existing client configuration
+      ansible.builtin.stat:
+        path: "{{ client_config_path }}"
+      delegate_to: localhost
+      become: false
+      register: client_config_stat
+
+    - name: Require existing client configuration
+      ansible.builtin.assert:
+        that:
+          - client_config_stat.stat.exists
+        fail_msg: >-
+          Client configuration does not exist:
+          {{ client_config_path }}
+
+    # ============================================================
+    # Read old private key
+    # ============================================================
+
+    - name: Read old client private key
+      ansible.builtin.set_fact:
+        old_client_private_key: >-
+          {{
+            lookup(
+              'ansible.builtin.file',
+              client_config_path
+            )
+            | regex_findall('(?m)^PrivateKey\s*=\s*(\S+)')
+            | first
+            | default('')
+          }}
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Validate old client private key
+      ansible.builtin.assert:
+        that:
+          - old_client_private_key | length > 0
+        fail_msg: >-
+          Could not find PrivateKey in:
+          {{ client_config_path }}
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    # ============================================================
+    # Derive old public key
+    # ============================================================
+
+    - name: Derive old client public key
+      ansible.builtin.shell:
+        cmd: >-
+          printf '%s' '{{ old_client_private_key }}' | wg pubkey
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      become: false
+      register: old_client_public_key
+      changed_when: false
+      no_log: true
+
+    # ============================================================
+    # Verify old peer exists on running wg0
+    # ============================================================
+
+    - name: Read current WireGuard peers
+      ansible.builtin.command:
+        cmd: wg show wg0 peers
+      register: current_wireguard_peers
+      changed_when: false
+
+    - name: Validate old peer exists on wg0
+      ansible.builtin.assert:
+        that:
+          - old_client_public_key.stdout | trim in current_wireguard_peers.stdout_lines
+        fail_msg: >-
+          Old WireGuard peer {{ client_name }} is not present on wg0.
+          Refusing to rotate the client key.
+      no_log: true
+
+    # ============================================================
+    # Generate new key pair
+    # ============================================================
+
+    - name: Generate new client private key
+      ansible.builtin.command:
+        cmd: wg genkey
+      delegate_to: localhost
+      become: false
+      register: new_client_private_key
+      changed_when: true
+      no_log: true
+
+    - name: Derive new client public key
+      ansible.builtin.shell:
+        cmd: >-
+          printf '%s' '{{ new_client_private_key.stdout | trim }}'
+          | wg pubkey
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      become: false
+      register: new_client_public_key
+      changed_when: false
+      no_log: true
+
+    # ============================================================
+    # Read server key
+    # ============================================================
+
+    - name: Read server private key
+      ansible.builtin.slurp:
+        src: /etc/wireguard/server.key
+      register: server_private_key
+      no_log: true
+
+    - name: Derive server public key
+      ansible.builtin.shell:
+        cmd: >-
+          printf '%s' '{{ server_private_key.content | b64decode | trim }}'
+          | wg pubkey
+      args:
+        executable: /bin/bash
+      register: server_public_key_result
+      changed_when: false
+      no_log: true
+
+    # ============================================================
+    # Replace peer on running WireGuard interface
+    # ============================================================
+
+    - name: Add new peer to running WireGuard interface
+      ansible.builtin.command:
+        cmd: >-
+          wg set wg0 peer '{{ new_client_public_key.stdout | trim }}'
+          allowed-ips '{{ selected_peer.address }}/32'
+          persistent-keepalive '{{ selected_peer.persistent_keepalive | default(25) }}'
+      no_log: true
+
+    - name: Remove old peer from running WireGuard interface
+      ansible.builtin.command:
+        cmd: >-
+          wg set wg0 peer '{{ old_client_public_key.stdout | trim }}'
+          remove
+      no_log: true
+
+    # ============================================================
+    # Persist new public key in server configuration
+    # ============================================================
+
+    - name: Replace old public key in wg0 configuration
+      ansible.builtin.replace:
+        path: /etc/wireguard/wg0.conf
+        regexp: >-
+          (?m)^PublicKey\s*=\s*{{ old_client_public_key.stdout | trim | regex_escape }}$
+        replace: >-
+          PublicKey = {{ new_client_public_key.stdout | trim }}
+      notify: Restart WireGuard
+      no_log: true
+
+    # ============================================================
+    # Generate new client configuration
+    # ============================================================
+
+    - name: Generate rotated client configuration
+      ansible.builtin.template:
+        src: ../templates/client.conf.j2
+        dest: "{{ client_config_path }}"
+        owner: "{{ lookup('ansible.builtin.env', 'USER') }}"
+        group: "{{ lookup('ansible.builtin.env', 'USER') }}"
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      vars:
+        peer: "{{ selected_peer }}"
+        peer_private_key: "{{ new_client_private_key.stdout | trim }}"
+        server_public_key: "{{ server_public_key_result.stdout | trim }}"
+      no_log: true
+
+    # ============================================================
+    # Apply persistent server configuration immediately
+    # ============================================================
+
+    - name: Apply pending WireGuard restart
+      ansible.builtin.meta: flush_handlers
+
+    # ============================================================
+    # Verification
+    # ============================================================
+
+    - name: Verify WireGuard interface
+      ansible.builtin.command:
+        cmd: wg show wg0
+      register: wg_status
+      changed_when: false
+
+    - name: Display WireGuard status
+      ansible.builtin.debug:
+        var: wg_status.stdout_lines
+
+    - name: Show generated client configuration path
+      ansible.builtin.debug:
+        msg: "Generated {{ client_config_path }}"
+
+  handlers:
+
+    - name: Restart WireGuard
+      ansible.builtin.systemd:
+        name: wg-quick@wg0
+        state: restarted
+        daemon_reload: true
+
+# ansible-playbook \
+#   4-vpn-gitab-monitoring-etc/1-wireguard/rotate-wireguard-client.yml \
+#   -e "client_name=vaclav client_group=admin"
+
+# ansible-playbook \
+#   4-vpn-gitab-monitoring-etc/1-wireguard/rotate-wireguard-client.yml \
+#   -e "client_name=vaclav-mobile client_group=developers"

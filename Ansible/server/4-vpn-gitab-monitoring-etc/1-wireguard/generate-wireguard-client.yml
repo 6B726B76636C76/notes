@@ -1,0 +1,180 @@
+---
+- name: Generate WireGuard client configuration
+  hosts: servers
+  become: true
+  gather_facts: false
+
+  vars_files:
+    - "{{ playbook_dir }}/../group_vars/all.yml"
+
+  vars:
+    client_group_map:
+      admin: admin
+      developer: developers
+      user: http_only
+
+  tasks:
+
+    # ============================================================
+    # Validation
+    # ============================================================
+
+    - name: Validate client type
+      ansible.builtin.assert:
+        that:
+          - client_type is defined
+          - client_type in client_group_map
+        fail_msg: >-
+          client_type must be one of:
+          admin, developer, user
+
+    # ============================================================
+    # Find peer
+    # ============================================================
+
+    - name: Find peer for requested client type
+      ansible.builtin.set_fact:
+        selected_peer: >-
+          {{
+            wg_peers
+            | selectattr(
+                'group',
+                'equalto',
+                client_group_map[client_type]
+              )
+            | list
+            | first
+          }}
+
+    - name: Validate peer exists
+      ansible.builtin.assert:
+        that:
+          - selected_peer is defined
+          - selected_peer is not none
+        fail_msg: >-
+          No WireGuard peer found for client type '{{ client_type }}'.
+
+    # ============================================================
+    # Client configuration path
+    # ============================================================
+
+    - name: Define client configuration path
+      ansible.builtin.set_fact:
+        client_config_path: >-
+          {{ playbook_dir }}/client-configs/{{
+            wg_peer_prefixes[selected_peer.group]
+          }}-{{ selected_peer.id }}.conf
+
+    # ============================================================
+    # Read existing private key
+    # ============================================================
+
+    - name: Check existing client configuration
+      ansible.builtin.stat:
+        path: "{{ client_config_path }}"
+      delegate_to: localhost
+      become: false
+      register: client_config_stat
+
+    - name: Read existing client private key
+      ansible.builtin.set_fact:
+        peer_private_key: >-
+          {{
+            lookup(
+              'ansible.builtin.file',
+              client_config_path
+            )
+            | regex_findall('(?m)^PrivateKey\s*=\s*(\S+)')
+            | first
+            | default('')
+          }}
+      delegate_to: localhost
+      become: false
+      no_log: true
+      when: client_config_stat.stat.exists
+
+    # ============================================================
+    # Generate private key if needed
+    # ============================================================
+
+    - name: Generate client private key
+      ansible.builtin.command:
+        cmd: wg genkey
+      delegate_to: localhost
+      become: false
+      register: generated_client_key
+      changed_when: true
+      no_log: true
+      when:
+        - not client_config_stat.stat.exists
+
+    - name: Set generated private key
+      ansible.builtin.set_fact:
+        peer_private_key: "{{ generated_client_key.stdout | trim }}"
+      delegate_to: localhost
+      become: false
+      no_log: true
+      when:
+        - not client_config_stat.stat.exists
+
+    # ============================================================
+    # Validate key
+    # ============================================================
+
+    - name: Validate client private key
+      ansible.builtin.assert:
+        that:
+          - peer_private_key is defined
+          - peer_private_key | length > 0
+        fail_msg: >-
+          Could not obtain private key for peer
+          '{{ selected_peer.id }}'.
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    # ============================================================
+    # Read server private key
+    # ============================================================
+
+    - name: Read server private key
+      ansible.builtin.slurp:
+        src: /etc/wireguard/server.key
+      register: server_private_key
+      no_log: true
+
+    - name: Derive server public key
+      ansible.builtin.shell:
+        cmd: >-
+          printf '%s' '{{ server_private_key.content | b64decode | trim }}'
+          | wg pubkey
+      args:
+        executable: /bin/bash
+      register: server_public_key_result
+      changed_when: false
+      no_log: true
+
+    # ============================================================
+    # Generate client configuration
+    # ============================================================
+
+    - name: Generate client configuration
+      ansible.builtin.template:
+        src: ../templates/client.conf.j2
+        dest: "{{ client_config_path }}"
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      vars:
+        peer: "{{ selected_peer }}"
+        peer_private_key: "{{ peer_private_key }}"
+        server_public_key: "{{ server_public_key_result.stdout | trim }}"
+      no_log: true
+
+    - name: Show generated configuration path
+      ansible.builtin.debug:
+        msg: "{{ client_config_path }}"
+
+#ansible-playbook playbooks/generate-wireguard-client.yml -e "client_type=admin"
+#ansible-playbook playbooks/generate-wireguard-client.yml -e "client_type=developer"
+#ansible-playbook playbooks/generate-wireguard-client.yml -e "client_type=user"

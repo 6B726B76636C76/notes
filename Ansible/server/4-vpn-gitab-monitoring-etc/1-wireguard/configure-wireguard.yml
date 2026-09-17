@@ -1,0 +1,342 @@
+---
+- name: Configure WireGuard VPN
+  hosts: servers
+  become: true
+  gather_facts: true
+
+  vars_files:
+    - "{{ playbook_dir }}/../group_vars/all.yml"
+
+  tasks:
+
+    # ============================================================
+    # Validation
+    # ============================================================
+
+    - name: Validate WireGuard peer configuration
+      ansible.builtin.assert:
+        that:
+          - item.id is defined
+          - item.id | length > 0
+          - item.name is defined
+          - item.name | length > 0
+          - item.group in ['admin', 'developers', 'http_only']
+          - item.address is defined
+          - item.persistent_keepalive | default(25) | int >= 0
+        fail_msg: "Invalid WireGuard peer definition: {{ item }}"
+      loop: "{{ wg_peers }}"
+      loop_control:
+        label: "{{ item.id }}"
+
+    - name: Validate WireGuard peer names are unique
+      ansible.builtin.assert:
+        that:
+          - wg_peers | map(attribute='name') | list | unique | length == wg_peers | length
+        fail_msg: "WireGuard peer names must be unique."
+
+    # ============================================================
+    # Packages
+    # ============================================================
+
+    - name: Install WireGuard packages
+      ansible.builtin.apt:
+        name:
+          - wireguard
+          - wireguard-tools
+        state: present
+        update_cache: true
+
+    # ============================================================
+    # Local client configuration directory
+    # ============================================================
+
+    - name: Create local client configuration directory
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/client-configs"
+        state: directory
+        mode: "0700"
+      delegate_to: localhost
+      become: false
+
+    # ============================================================
+    # Server key
+    # ============================================================
+
+    - name: Ensure /etc/wireguard exists
+      ansible.builtin.file:
+        path: /etc/wireguard
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Generate server private key
+      ansible.builtin.shell:
+        cmd: "wg genkey > /etc/wireguard/server.key"
+        creates: /etc/wireguard/server.key
+      no_log: true
+
+    - name: Set server private key permissions
+      ansible.builtin.file:
+        path: /etc/wireguard/server.key
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Read server private key
+      ansible.builtin.slurp:
+        src: /etc/wireguard/server.key
+      register: server_private_key
+      no_log: true
+
+    - name: Derive server public key
+      ansible.builtin.shell:
+        cmd: >-
+          printf '%s' '{{ server_private_key.content | b64decode | trim }}'
+          | wg pubkey
+      args:
+        executable: /bin/bash
+      register: server_public_key_result
+      changed_when: false
+      no_log: true
+
+    - name: Store server public key fact
+      ansible.builtin.set_fact:
+        server_public_key: "{{ server_public_key_result.stdout | trim }}"
+
+    # ============================================================
+    # Detect existing client configurations
+    # ============================================================
+
+    - name: Check existing client configurations
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/client-configs/{{ item.name }}.conf"
+      delegate_to: localhost
+      become: false
+      loop: "{{ wg_peers }}"
+      loop_control:
+        label: "{{ item.id }}"
+        index_var: peer_index
+      register: client_config_stats
+
+    # ============================================================
+    # Generate private keys for new peers
+    #
+    # Private keys are generated on the Ansible controller.
+    # They are NOT written to a separate .private file.
+    # They will be stored only inside the resulting client .conf.
+    # ============================================================
+
+    - name: Generate private keys for new peers
+      ansible.builtin.command:
+        cmd: wg genkey
+      delegate_to: localhost
+      become: false
+      loop: "{{ wg_peers }}"
+      loop_control:
+        label: "{{ item.id }}"
+        index_var: peer_index
+      register: generated_client_keys
+      when: not client_config_stats.results[peer_index].stat.exists
+      changed_when: true
+      no_log: true
+
+    # ============================================================
+    # Build private-key map
+    #
+    # Existing peer:
+    #   read PrivateKey from existing .conf
+    #
+    # New peer:
+    #   use key generated above
+    # ============================================================
+
+    - name: Build client private key map
+      ansible.builtin.set_fact:
+        wg_client_private_keys: >-
+          {{
+            wg_client_private_keys | default({}) |
+            combine({
+              item.id:
+                (
+                  (
+                    lookup(
+                      'ansible.builtin.file',
+                      playbook_dir + '/client-configs/' + item.name + '.conf',
+                      errors='ignore'
+                    )
+                    | regex_findall(
+                        '(?m)^PrivateKey\s*=\s*(\S+)'
+                      )
+                    | first
+                  )
+                  if client_config_stats.results[peer_index].stat.exists
+                  else
+                  (
+                    generated_client_keys.results[peer_index].stdout
+                    | trim
+                  )
+                )
+            })
+          }}
+      loop: "{{ wg_peers }}"
+      loop_control:
+        label: "{{ item.id }}"
+        index_var: peer_index
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    # ============================================================
+    # Validate that every peer has a private key
+    # ============================================================
+
+    - name: Validate client private keys
+      ansible.builtin.assert:
+        that:
+          - wg_client_private_keys[item.id] is defined
+          - wg_client_private_keys[item.id] | length > 0
+        fail_msg: >-
+          Could not obtain a private key for WireGuard peer {{ item.id }}.
+      loop: "{{ wg_peers }}"
+      loop_control:
+        label: "{{ item.id }}"
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    # ============================================================
+    # Derive client public keys
+    # ============================================================
+
+    - name: Derive client public keys
+      ansible.builtin.shell:
+        cmd: >-
+          printf '%s' '{{ wg_client_private_keys[item.id] }}'
+          | wg pubkey
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      become: false
+      loop: "{{ wg_peers }}"
+      loop_control:
+        label: "{{ item.id }}"
+      register: client_public_keys
+      changed_when: false
+      no_log: true
+
+    # ============================================================
+    # Build server peer configuration
+    # ============================================================
+
+    - name: Build WireGuard peer facts
+      ansible.builtin.set_fact:
+        wg_peer_configs: >-
+          {{
+            wg_peer_configs | default([]) +
+            [
+              {
+                'id': item.0.id,
+                'group': item.0.group,
+                'address': item.0.address,
+                'persistent_keepalive':
+                  item.0.persistent_keepalive | default(25),
+                'public_key': item.1.stdout | trim
+              }
+            ]
+          }}
+      loop: "{{ wg_peers | zip(client_public_keys.results) | list }}"
+      loop_control:
+        label: "{{ item.0.id }}"
+      no_log: true
+
+    # ============================================================
+    # IPv4 forwarding
+    #
+    # Required for full-tunnel VPN / routing.
+    # NAT is configured separately in the firewall playbook.
+    # ============================================================
+
+    - name: Enable IPv4 forwarding
+      ansible.posix.sysctl:
+        name: net.ipv4.ip_forward
+        value: "1"
+        state: present
+        reload: true
+
+    # ============================================================
+    # Render server WireGuard configuration
+    # ============================================================
+
+    - name: Render wg0 configuration
+      ansible.builtin.template:
+        src: ../templates/wg0.conf.j2
+        dest: /etc/wireguard/wg0.conf
+        owner: root
+        group: root
+        mode: "0600"
+        validate: "wg-quick strip %s"
+      notify: Restart WireGuard
+      no_log: true
+
+    # ============================================================
+    # Generate client configurations
+    #
+    # PrivateKey is stored directly inside the .conf.
+    # No separate client private-key files are created.
+    # ============================================================
+
+    - name: Generate client configurations
+      ansible.builtin.template:
+        src: ../templates/client.conf.j2
+        dest: >-
+          {{ playbook_dir }}/client-configs/{{ item.name }}.conf
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      loop: "{{ wg_peers }}"
+      loop_control:
+        label: "{{ item.id }}"
+      vars:
+        peer:
+          id: "{{ item.id }}"
+          name: "{{ item.name }}"
+          group: "{{ item.group }}"
+          address: "{{ item.address }}"
+          persistent_keepalive: "{{ item.persistent_keepalive | default(25) }}"
+        peer_private_key: "{{ wg_client_private_keys[item.id] }}"
+      no_log: true
+
+    # ============================================================
+    # WireGuard service
+    # ============================================================
+
+    - name: Ensure WireGuard service is enabled and running
+      ansible.builtin.systemd:
+        name: wg-quick@wg0
+        enabled: true
+        state: started
+
+    - name: Apply pending WireGuard configuration changes
+      ansible.builtin.meta: flush_handlers
+
+    # ============================================================
+    # Verification
+    # ============================================================
+
+    - name: Check WireGuard interface
+      ansible.builtin.command:
+        cmd: wg show wg0
+      register: wg_status
+      changed_when: false
+
+    - name: Display WireGuard status
+      ansible.builtin.debug:
+        var: wg_status.stdout_lines
+
+  handlers:
+    - name: Restart WireGuard
+      ansible.builtin.systemd:
+        name: wg-quick@wg0
+        state: restarted
+        daemon_reload: true

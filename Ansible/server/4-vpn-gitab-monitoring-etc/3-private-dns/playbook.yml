@@ -1,0 +1,98 @@
+---
+- name: Configure private DNS
+  hosts: servers
+  become: true
+  gather_facts: false
+
+  vars_files:
+    - ../group_vars/all.yml
+
+  tasks:
+
+    - name: Install dnsmasq
+      ansible.builtin.apt:
+        name: dnsmasq
+        state: present
+        update_cache: true
+
+    - name: Remove Debian dnsmasq local-service drop-in
+      ansible.builtin.file:
+        path: /etc/dnsmasq.d/01-localauthority.conf
+        state: absent
+      notify: Restart dnsmasq
+
+    - name: Configure dnsmasq
+      ansible.builtin.template:
+        src: ../templates/private-dns.conf.j2
+        dest: /etc/dnsmasq.d/private-dns.conf
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart dnsmasq
+
+    # - name: Create dnsmasq systemd override directory
+    #   ansible.builtin.file:
+    #     path: /etc/systemd/system/dnsmasq.service.d
+    #     state: directory
+    #     owner: root
+    #     group: root
+    #     mode: "0755"
+
+    # - name: Ensure dnsmasq starts after WireGuard
+    #   ansible.builtin.copy:
+    #     dest: /etc/systemd/system/dnsmasq.service.d/wireguard.conf
+    #     owner: root
+    #     group: root
+    #     mode: "0644"
+    #     content: |
+    #       [Unit]
+    #       Requires=wg-quick@wg0.service
+    #       After=wg-quick@wg0.service
+    #   notify:
+    #     - Reload systemd
+    #     - Restart dnsmasq
+    - name: Ensure dnsmasq listens only on WireGuard address
+      ansible.builtin.template:
+        src: ../templates/dnsmasq-main.conf.j2
+        dest: /etc/dnsmasq.d/10-wireguard.conf
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart dnsmasq
+
+    - name: Ensure dnsmasq is enabled and running
+      ansible.builtin.systemd:
+        name: dnsmasq
+        enabled: true
+        state: started
+
+    - name: Validate dnsmasq configuration
+      ansible.builtin.command:
+        cmd: dnsmasq --test
+      changed_when: false
+
+    - name: Check dnsmasq listeners
+      ansible.builtin.command:
+        cmd: ss -lntup
+      register: dns_listeners
+      changed_when: false
+
+    - name: Show DNS listeners
+      ansible.builtin.debug:
+        msg: >-
+          {{
+            dns_listeners.stdout_lines
+            | select('search', ':53')
+            | list
+          }}
+
+  handlers:
+
+    # - name: Reload systemd
+    #   ansible.builtin.systemd:
+    #     daemon_reload: true
+
+    - name: Restart dnsmasq
+      ansible.builtin.systemd:
+        name: dnsmasq
+        state: restarted

@@ -1,0 +1,13 @@
+# Managed by Ansible
+
+no-resolv
+
+{% for upstream in private_dns_upstreams %}
+server={{ upstream }}
+{% endfor %}
+
+local=/.{{ private_dns_domain }}/
+
+{% for record in private_dns_records %}
+host-record={{ record.name }},{{ record.address }}
+{% endfor %}

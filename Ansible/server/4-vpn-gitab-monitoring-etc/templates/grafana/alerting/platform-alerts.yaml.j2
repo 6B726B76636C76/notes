@@ -1,0 +1,676 @@
+apiVersion: 1
+
+groups:
+
+  - orgId: 1
+    name: platform-alerts
+    folder: "{{ grafana_alerting_folder }}"
+    interval: "{{ grafana_alerting_interval }}"
+
+    rules:
+
+      # ========================================================
+      # Prometheus
+      # ========================================================
+
+      - uid: prometheus_unavailable
+        title: Prometheus unavailable
+        condition: B
+
+        data:
+
+          - refId: A
+            queryType: ""
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: "{{ grafana_alerting_prometheus_datasource_uid }}"
+
+            model:
+              editorMode: code
+              expr: |
+                kube_statefulset_status_replicas_ready{
+                  namespace="monitoring",
+                  statefulset="prometheus-monitoring-kube-prometheus-prometheus"
+                }
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: true
+              refId: A
+
+          - refId: B
+            queryType: ""
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: "-100"
+
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 1
+                    type: lt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - A
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+
+              datasource:
+                type: __expr__
+                uid: "-100"
+
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+              type: classic_conditions
+
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 5m
+
+        labels:
+          severity: critical
+          component: prometheus
+
+        annotations:
+          summary: "Prometheus is unavailable"
+          description: "Prometheus has no ready replica."
+
+      # ========================================================
+      # Grafana
+      # ========================================================
+
+      - uid: grafana_unavailable
+        title: Grafana unavailable
+        condition: B
+
+        data:
+
+          - refId: A
+            queryType: ""
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: "{{ grafana_alerting_prometheus_datasource_uid }}"
+
+            model:
+              editorMode: code
+              expr: |
+                kube_deployment_status_replicas_available{
+                  namespace="monitoring",
+                  deployment="monitoring-grafana"
+                }
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: true
+              refId: A
+
+          - refId: B
+            queryType: ""
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: "-100"
+
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 1
+                    type: lt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - A
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+
+              datasource:
+                type: __expr__
+                uid: "-100"
+
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+              type: classic_conditions
+
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 5m
+
+        labels:
+          severity: critical
+          component: grafana
+
+        annotations:
+          summary: "Grafana is unavailable"
+          description: "Grafana has no available replica."
+
+      # ========================================================
+      # GitLab
+      # ========================================================
+
+      - uid: gitlab_webservice_unavailable
+        title: GitLab Webservice unavailable
+        condition: B
+
+        data:
+
+          - refId: A
+            queryType: ""
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: "{{ grafana_alerting_prometheus_datasource_uid }}"
+
+            model:
+              editorMode: code
+              expr: |
+                kube_deployment_status_replicas_available{
+                  namespace="vps",
+                  deployment="gitlab-webservice-default"
+                }
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: true
+              refId: A
+
+          - refId: B
+            queryType: ""
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: "-100"
+
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 1
+                    type: lt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - A
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+
+              datasource:
+                type: __expr__
+                uid: "-100"
+
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+              type: classic_conditions
+
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 5m
+
+        labels:
+          severity: critical
+          component: gitlab
+
+        annotations:
+          summary: "GitLab Webservice is unavailable"
+          description: "GitLab Webservice has no available replica."
+
+      # ========================================================
+      # Harbor Core
+      # ========================================================
+
+      - uid: harbor_core_unavailable
+        title: Harbor Core unavailable
+        condition: B
+
+        data:
+
+          - refId: A
+            queryType: ""
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: "{{ grafana_alerting_prometheus_datasource_uid }}"
+
+            model:
+              editorMode: code
+              expr: |
+                kube_deployment_status_replicas_available{
+                  namespace="harbor",
+                  deployment="harbor-core"
+                }
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: true
+              refId: A
+
+          - refId: B
+            queryType: ""
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: "-100"
+
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 1
+                    type: lt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - A
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+
+              datasource:
+                type: __expr__
+                uid: "-100"
+
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+              type: classic_conditions
+
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 5m
+
+        labels:
+          severity: critical
+          component: harbor
+
+        annotations:
+          summary: "Harbor Core is unavailable"
+          description: "Harbor Core has no available replica."
+
+      # ========================================================
+      # Harbor Registry
+      # ========================================================
+
+      - uid: harbor_registry_unavailable
+        title: Harbor Registry unavailable
+        condition: B
+
+        data:
+
+          - refId: A
+            queryType: ""
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: "{{ grafana_alerting_prometheus_datasource_uid }}"
+
+            model:
+              editorMode: code
+              expr: |
+                kube_deployment_status_replicas_available{
+                  namespace="harbor",
+                  deployment="harbor-registry"
+                }
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: true
+              refId: A
+
+          - refId: B
+            queryType: ""
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: "-100"
+
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 1
+                    type: lt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - A
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+
+              datasource:
+                type: __expr__
+                uid: "-100"
+
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+              type: classic_conditions
+
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 5m
+
+        labels:
+          severity: critical
+          component: harbor
+
+        annotations:
+          summary: "Harbor Registry is unavailable"
+          description: "Harbor Registry has no available replica."
+
+      # ========================================================
+      # Harbor Jobservice
+      # ========================================================
+
+      - uid: harbor_jobservice_unavailable
+        title: Harbor Jobservice unavailable
+        condition: B
+
+        data:
+
+          - refId: A
+            queryType: ""
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: "{{ grafana_alerting_prometheus_datasource_uid }}"
+
+            model:
+              editorMode: code
+              expr: |
+                kube_deployment_status_replicas_available{
+                  namespace="harbor",
+                  deployment="harbor-jobservice"
+                }
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: true
+              refId: A
+
+          - refId: B
+            queryType: ""
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: "-100"
+
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 1
+                    type: lt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - A
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+
+              datasource:
+                type: __expr__
+                uid: "-100"
+
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+              type: classic_conditions
+
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 5m
+
+        labels:
+          severity: critical
+          component: harbor
+
+        annotations:
+          summary: "Harbor Jobservice is unavailable"
+          description: "Harbor Jobservice has no available replica."
+
+      # ========================================================
+      # Argo CD Repo Server
+      # ========================================================
+
+      - uid: argocd_repo_server_unavailable
+        title: Argo CD Repo Server unavailable
+        condition: B
+
+        data:
+
+          - refId: A
+            queryType: ""
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: "{{ grafana_alerting_prometheus_datasource_uid }}"
+
+            model:
+              editorMode: code
+              expr: |
+                kube_deployment_status_replicas_available{
+                  namespace="argocd",
+                  deployment="argocd-repo-server"
+                }
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: true
+              refId: A
+
+          - refId: B
+            queryType: ""
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: "-100"
+
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 1
+                    type: lt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - A
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+
+              datasource:
+                type: __expr__
+                uid: "-100"
+
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+              type: classic_conditions
+
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 5m
+
+        labels:
+          severity: critical
+          component: argocd
+
+        annotations:
+          summary: "Argo CD Repo Server is unavailable"
+          description: "Argo CD Repo Server has no available replica."
+
+      # ========================================================
+      # Argo CD Server
+      # ========================================================
+
+      - uid: argocd_server_unavailable
+        title: Argo CD Server unavailable
+        condition: B
+
+        data:
+
+          - refId: A
+            queryType: ""
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: "{{ grafana_alerting_prometheus_datasource_uid }}"
+
+            model:
+              editorMode: code
+              expr: |
+                kube_deployment_status_replicas_available{
+                  namespace="argocd",
+                  deployment="argocd-server"
+                }
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: true
+              refId: A
+
+          - refId: B
+            queryType: ""
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: "-100"
+
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 1
+                    type: lt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - A
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+
+              datasource:
+                type: __expr__
+                uid: "-100"
+
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+              type: classic_conditions
+
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 5m
+
+        labels:
+          severity: critical
+          component: argocd
+
+        annotations:
+          summary: "Argo CD Server is unavailable"
+          description: "Argo CD Server has no available replica."
+
+      # ========================================================
+      # Argo CD Application Controller
+      # ========================================================
+
+      - uid: argocd_controller_unavailable
+        title: Argo CD Application Controller unavailable
+        condition: B
+
+        data:
+
+          - refId: A
+            queryType: ""
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: "{{ grafana_alerting_prometheus_datasource_uid }}"
+
+            model:
+              editorMode: code
+              expr: |
+                kube_statefulset_status_replicas_ready{
+                  namespace="argocd",
+                  statefulset="argocd-application-controller"
+                }
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: true
+              refId: A
+
+          - refId: B
+            queryType: ""
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: "-100"
+
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 1
+                    type: lt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - A
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+
+              datasource:
+                type: __expr__
+                uid: "-100"
+
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+              type: classic_conditions
+
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 5m
+
+        labels:
+          severity: critical
+          component: argocd
+
+        annotations:
+          summary: "Argo CD Application Controller is unavailable"
+          description: "Argo CD Application Controller has no ready replica."

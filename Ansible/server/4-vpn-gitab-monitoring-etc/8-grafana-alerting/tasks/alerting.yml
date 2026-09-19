@@ -1,0 +1,247 @@
+---
+# ============================================================
+# Validation
+# ============================================================
+
+- name: Validate Grafana Alerting configuration
+  ansible.builtin.assert:
+    that:
+      - grafana_alerting_namespace is defined
+      - grafana_alerting_namespace | length > 0
+
+      - grafana_alerting_release is defined
+      - grafana_alerting_release | length > 0
+
+      - grafana_alerting_configmap is defined
+      - grafana_alerting_configmap | length > 0
+
+      - grafana_alerting_telegram_secret is defined
+      - grafana_alerting_telegram_secret | length > 0
+
+      - grafana_alerting_prometheus_datasource_uid is defined
+      - grafana_alerting_prometheus_datasource_uid | length > 0
+
+      - vault_grafana_telegram_bot_token is defined
+      - vault_grafana_telegram_bot_token | length > 0
+
+      - vault_grafana_telegram_chats is defined
+      - vault_grafana_telegram_chats | length > 0
+
+    fail_msg: "Invalid Grafana Alerting configuration."
+
+# ============================================================
+# Helm repository
+# ============================================================
+
+- name: Add Prometheus Community Helm repository
+  ansible.builtin.command:
+    cmd: >
+      helm repo add prometheus-community
+      https://prometheus-community.github.io/helm-charts
+      --force-update
+  changed_when: false
+
+- name: Update Helm repositories
+  ansible.builtin.command:
+    cmd: helm repo update
+  changed_when: false
+
+# ============================================================
+# Verify monitoring release
+# ============================================================
+
+- name: Check monitoring Helm release
+  ansible.builtin.command:
+    cmd: >
+      helm status
+      "{{ grafana_alerting_release }}"
+      -n "{{ grafana_alerting_namespace }}"
+  register: monitoring_status
+  changed_when: false
+
+# ============================================================
+# Telegram Secret
+# ============================================================
+
+- name: Create Grafana Telegram Secret
+  ansible.builtin.shell: |
+    kubectl create secret generic "{{ grafana_alerting_telegram_secret }}" \
+      --namespace "{{ grafana_alerting_namespace }}" \
+      --from-literal=GRAFANA_TELEGRAM_BOT_TOKEN="{{ vault_grafana_telegram_bot_token }}" \
+      --dry-run=client \
+      -o yaml | kubectl apply -f -
+  register: grafana_telegram_secret_result
+  changed_when: >
+    'created' in grafana_telegram_secret_result.stdout or
+    'configured' in grafana_telegram_secret_result.stdout
+  no_log: true
+
+# ============================================================
+# Temporary directory
+# ============================================================
+
+- name: Create Grafana Alerting temporary directory
+  ansible.builtin.file:
+    path: "{{ grafana_alerting_config_dir }}"
+    state: directory
+    mode: "0700"
+
+# ============================================================
+# Render provisioning files
+# ============================================================
+
+- name: Render Grafana contact points
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../templates/grafana/alerting/contact-points.yaml.j2"
+    dest: "{{ grafana_alerting_config_dir }}/contact-points.yaml"
+    mode: "0600"
+
+- name: Render Grafana notification policies
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../templates/grafana/alerting/notification-policies.yaml.j2"
+    dest: "{{ grafana_alerting_config_dir }}/notification-policies.yaml"
+    mode: "0600"
+
+- name: Render Grafana node alerts
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../templates/grafana/alerting/node-alerts.yaml.j2"
+    dest: "{{ grafana_alerting_config_dir }}/node-alerts.yaml"
+    mode: "0600"
+
+- name: Render Grafana Kubernetes alerts
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../templates/grafana/alerting/kubernetes-alerts.yaml.j2"
+    dest: "{{ grafana_alerting_config_dir }}/kubernetes-alerts.yaml"
+    mode: "0600"
+
+- name: Render Grafana platform alerts
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../templates/grafana/alerting/platform-alerts.yaml.j2"
+    dest: "{{ grafana_alerting_config_dir }}/platform-alerts.yaml"
+    mode: "0600"
+
+# ============================================================
+# ConfigMap
+# ============================================================
+
+- name: Create Grafana Alerting ConfigMap
+  ansible.builtin.shell: |
+    kubectl create configmap "{{ grafana_alerting_configmap }}" \
+      --namespace "{{ grafana_alerting_namespace }}" \
+      --from-file=contact-points.yaml="{{ grafana_alerting_config_dir }}/contact-points.yaml" \
+      --from-file=notification-policies.yaml="{{ grafana_alerting_config_dir }}/notification-policies.yaml" \
+      --from-file=node-alerts.yaml="{{ grafana_alerting_config_dir }}/node-alerts.yaml" \
+      --from-file=kubernetes-alerts.yaml="{{ grafana_alerting_config_dir }}/kubernetes-alerts.yaml" \
+      --from-file=platform-alerts.yaml="{{ grafana_alerting_config_dir }}/platform-alerts.yaml" \
+      --dry-run=client \
+      -o yaml | kubectl apply -f -
+  register: grafana_alerting_configmap_result
+  changed_when: >
+    'created' in grafana_alerting_configmap_result.stdout or
+    'configured' in grafana_alerting_configmap_result.stdout
+
+# ============================================================
+# Render Helm values
+# ============================================================
+
+- name: Render Grafana Alerting Helm values
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../templates/grafana/alerting/values.yaml.j2"
+    dest: "{{ grafana_alerting_config_dir }}/values.yaml"
+    mode: "0600"
+
+# ============================================================
+# Upgrade monitoring stack
+# ============================================================
+
+- name: Upgrade monitoring stack
+  ansible.builtin.command:
+    cmd: >
+      helm upgrade
+      "{{ grafana_alerting_release }}"
+      prometheus-community/kube-prometheus-stack
+      --namespace "{{ grafana_alerting_namespace }}"
+      --reuse-values
+      --values "{{ grafana_alerting_config_dir }}/values.yaml"
+      --wait
+      --timeout 15m
+  register: monitoring_helm_result
+  changed_when: >
+    'STATUS: deployed' in monitoring_helm_result.stdout or
+    'STATUS: upgraded' in monitoring_helm_result.stdout
+  no_log: true
+
+# ============================================================
+# Restart Grafana
+# ============================================================
+
+- name: Restart Grafana after alerting configuration change
+  ansible.builtin.command:
+    cmd: >
+      kubectl rollout restart
+      deployment/monitoring-grafana
+      -n "{{ grafana_alerting_namespace }}"
+  when:
+    - grafana_alerting_configmap_result.changed
+
+- name: Wait for Grafana rollout
+  ansible.builtin.command:
+    cmd: >
+      kubectl rollout status
+      deployment/monitoring-grafana
+      -n "{{ grafana_alerting_namespace }}"
+      --timeout=300s
+  changed_when: false
+
+# ============================================================
+# Verification
+# ============================================================
+
+- name: Show Grafana pod
+  ansible.builtin.command:
+    cmd: >
+      kubectl get pods
+      -n "{{ grafana_alerting_namespace }}"
+      -l app.kubernetes.io/name=grafana
+      -o wide
+  register: grafana_pods
+  changed_when: false
+
+- name: Show Grafana Alerting ConfigMap
+  ansible.builtin.command:
+    cmd: >
+      kubectl get configmap
+      "{{ grafana_alerting_configmap }}"
+      -n "{{ grafana_alerting_namespace }}"
+  register: grafana_alerting_configmap_status
+  changed_when: false
+
+- name: Show Grafana Telegram Secret
+  ansible.builtin.command:
+    cmd: >
+      kubectl get secret
+      "{{ grafana_alerting_telegram_secret }}"
+      -n "{{ grafana_alerting_namespace }}"
+  register: grafana_telegram_secret_status
+  changed_when: false
+
+- name: Print Grafana pods
+  ansible.builtin.debug:
+    var: grafana_pods.stdout_lines
+
+- name: Print Grafana Alerting ConfigMap
+  ansible.builtin.debug:
+    var: grafana_alerting_configmap_status.stdout_lines
+
+- name: Print Grafana Telegram Secret
+  ansible.builtin.debug:
+    var: grafana_telegram_secret_status.stdout_lines
+
+# ============================================================
+# Cleanup
+# ============================================================
+
+- name: Remove temporary Grafana Alerting directory
+  ansible.builtin.file:
+    path: "{{ grafana_alerting_config_dir }}"
+    state: absent

@@ -1,0 +1,316 @@
+apiVersion: 1
+
+groups:
+
+  - orgId: 1
+    name: node-alerts
+    folder: "{{ grafana_alerting_folder }}"
+    interval: "{{ grafana_alerting_interval }}"
+
+    rules:
+
+      # ========================================================
+      # CPU
+      # ========================================================
+
+      - uid: node_cpu_high
+        title: Node CPU usage high
+        condition: B
+
+        data:
+
+          - refId: A
+            queryType: ""
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: "{{ grafana_alerting_prometheus_datasource_uid }}"
+
+            model:
+              editorMode: code
+              expr: |
+                100 - (
+                  avg by (instance) (
+                    rate(node_cpu_seconds_total{mode="idle"}[5m])
+                  ) * 100
+                )
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: true
+              refId: A
+
+          - refId: B
+            queryType: ""
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: "-100"
+
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 90
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - A
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+
+              datasource:
+                type: __expr__
+                uid: "-100"
+
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+              type: classic_conditions
+
+        noDataState: OK
+        execErrState: Alerting
+        for: 10m
+
+        labels:
+          severity: warning
+          component: node
+
+        annotations:
+          summary: "Node CPU usage above 90%"
+          description: "Node CPU usage has been above 90% for 10 minutes."
+
+      # ========================================================
+      # Memory
+      # ========================================================
+
+      - uid: node_memory_high
+        title: Node memory usage high
+        condition: B
+
+        data:
+
+          - refId: A
+            queryType: ""
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: "{{ grafana_alerting_prometheus_datasource_uid }}"
+
+            model:
+              editorMode: code
+              expr: |
+                100 * (
+                  1 -
+                  node_memory_MemAvailable_bytes /
+                  node_memory_MemTotal_bytes
+                )
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: true
+              refId: A
+
+          - refId: B
+            queryType: ""
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: "-100"
+
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 90
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - A
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+
+              datasource:
+                type: __expr__
+                uid: "-100"
+
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+              type: classic_conditions
+
+        noDataState: OK
+        execErrState: Alerting
+        for: 10m
+
+        labels:
+          severity: warning
+          component: node
+
+        annotations:
+          summary: "Node memory usage above 90%"
+          description: "Node memory usage has been above 90% for 10 minutes."
+
+      # ========================================================
+      # Root filesystem
+      # ========================================================
+
+      - uid: node_root_fs_high
+        title: Node root filesystem usage high
+        condition: B
+
+        data:
+
+          - refId: A
+            queryType: ""
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: "{{ grafana_alerting_prometheus_datasource_uid }}"
+
+            model:
+              editorMode: code
+              expr: |
+                100 * (
+                  1 -
+                  node_filesystem_avail_bytes{
+                    mountpoint="/",
+                    fstype!~"tmpfs|overlay|squashfs"
+                  }
+                  /
+                  node_filesystem_size_bytes{
+                    mountpoint="/",
+                    fstype!~"tmpfs|overlay|squashfs"
+                  }
+                )
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: true
+              refId: A
+
+          - refId: B
+            queryType: ""
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: "-100"
+
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 90
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - A
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+
+              datasource:
+                type: __expr__
+                uid: "-100"
+
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+              type: classic_conditions
+
+        noDataState: OK
+        execErrState: Alerting
+        for: 10m
+
+        labels:
+          severity: critical
+          component: node
+
+        annotations:
+          summary: "Root filesystem usage above 90%"
+          description: "The root filesystem has been above 90% usage for 10 minutes."
+
+      # ========================================================
+      # WireGuard
+      # ========================================================
+
+      - uid: wireguard_down
+        title: WireGuard interface wg0 is down
+        condition: B
+
+        data:
+
+          - refId: A
+            queryType: ""
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: "{{ grafana_alerting_prometheus_datasource_uid }}"
+
+            model:
+              editorMode: code
+              expr: |
+                max(node_network_info{
+                  device="wg0",
+                  adminstate="up"
+                }) or vector(0)
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: true
+              refId: A
+
+          - refId: B
+            queryType: ""
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: "-100"
+
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 1
+                    type: lt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - A
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+
+              datasource:
+                type: __expr__
+                uid: "-100"
+
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+              type: classic_conditions
+
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 2m
+
+        labels:
+          severity: critical
+          component: wireguard
+
+        annotations:
+          summary: "WireGuard wg0 is down"
+          description: "The WireGuard interface wg0 has been down for 2 minutes."

@@ -1,0 +1,17 @@
+---
+grafana:
+
+  envFromSecret: "{{ grafana_alerting_telegram_secret }}"
+
+  persistence:
+    enabled: {{ grafana_persistence_enabled | lower }}
+    storageClassName: "{{ grafana_persistence_storage_class }}"
+    accessModes:
+      - ReadWriteOnce
+    size: "{{ grafana_persistence_size }}"
+
+  extraConfigmapMounts:
+    - name: grafana-alerting
+      mountPath: /etc/grafana/provisioning/alerting
+      configMap: "{{ grafana_alerting_configmap }}"
+      readOnly: true

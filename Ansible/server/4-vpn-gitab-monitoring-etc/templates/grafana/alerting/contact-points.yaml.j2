@@ -1,0 +1,15 @@
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: telegram
+
+    receivers:
+{% for chat in vault_grafana_telegram_chats %}
+      - uid: "telegram_{{ loop.index }}"
+        type: telegram
+        disableResolveMessage: false
+        settings:
+          bottoken: $GRAFANA_TELEGRAM_BOT_TOKEN
+          chatid: "{{ chat.chat_id }}"
+{% endfor %}

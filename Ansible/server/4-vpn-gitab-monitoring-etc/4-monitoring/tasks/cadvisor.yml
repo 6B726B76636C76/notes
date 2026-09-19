@@ -1,0 +1,208 @@
+---
+# ============================================================
+# cAdvisor DaemonSet
+# ============================================================
+
+- name: Deploy cAdvisor DaemonSet
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig }}"
+    state: present
+
+    definition:
+
+      apiVersion: apps/v1
+      kind: DaemonSet
+
+      metadata:
+        name: cadvisor
+        namespace: "{{ cadvisor_namespace }}"
+
+        labels:
+          app: cadvisor
+
+      spec:
+
+        selector:
+          matchLabels:
+            app: cadvisor
+
+        template:
+
+          metadata:
+            labels:
+              app: cadvisor
+
+          spec:
+            hostPID: true
+
+            # cAdvisor does not need a Kubernetes API token.
+            # Prevent the projected service-account volume from
+            # being mounted into the container.
+            automountServiceAccountToken: false
+
+            containers:
+
+              - name: cadvisor
+
+                image: "{{ cadvisor_image }}"
+                imagePullPolicy: IfNotPresent
+
+                securityContext:
+                  privileged: true
+
+                args:
+                  - "--port=8080"
+                  - "--housekeeping_interval=30s"
+
+                ports:
+
+                  - name: metrics
+                    containerPort: 8080
+                    protocol: TCP
+
+                volumeMounts:
+
+                  - name: rootfs
+                    mountPath: /rootfs
+                    readOnly: true
+
+                  - name: var-run
+                    mountPath: /var/run
+                    readOnly: true
+
+                  - name: sys
+                    mountPath: /sys
+                    readOnly: true
+
+                  - name: docker
+                    mountPath: /var/lib/docker
+                    readOnly: true
+
+                  - name: containerd
+                    mountPath: /var/lib/containerd
+                    readOnly: true
+
+                  - name: kubelet
+                    mountPath: /var/lib/kubelet
+                    readOnly: true
+
+                  - name: dev-disk
+                    mountPath: /dev/disk
+                    readOnly: true
+
+                  - name: dev-kmsg
+                    mountPath: /dev/kmsg
+                    readOnly: true
+
+            volumes:
+
+              - name: rootfs
+                hostPath:
+                  path: /
+                  type: Directory
+
+              - name: var-run
+                hostPath:
+                  path: /var/run
+                  type: Directory
+
+              - name: sys
+                hostPath:
+                  path: /sys
+                  type: Directory
+
+              - name: docker
+                hostPath:
+                  path: /var/lib/docker
+                  type: Directory
+
+              - name: containerd
+                hostPath:
+                  path: /var/lib/containerd
+                  type: Directory
+
+              - name: kubelet
+                hostPath:
+                  path: /var/lib/kubelet
+                  type: Directory
+
+              - name: dev-disk
+                hostPath:
+                  path: /dev/disk
+                  type: Directory
+
+              - name: dev-kmsg
+                hostPath:
+                  path: /dev/kmsg
+                  type: CharDevice
+
+# ============================================================
+# cAdvisor Service
+# ============================================================
+
+- name: Create cAdvisor Service
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig }}"
+    state: present
+
+    definition:
+
+      apiVersion: v1
+      kind: Service
+
+      metadata:
+        name: cadvisor
+        namespace: "{{ cadvisor_namespace }}"
+
+        labels:
+          app: cadvisor
+
+      spec:
+
+        selector:
+          app: cadvisor
+
+        ports:
+
+          - name: metrics
+            port: 8080
+            targetPort: metrics
+            protocol: TCP
+
+# ============================================================
+# cAdvisor ServiceMonitor
+# ============================================================
+
+- name: Create cAdvisor ServiceMonitor
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig }}"
+    state: present
+
+    definition:
+
+      apiVersion: monitoring.coreos.com/v1
+      kind: ServiceMonitor
+
+      metadata:
+        name: cadvisor
+        namespace: "{{ cadvisor_namespace }}"
+
+        labels:
+          release: "{{ monitoring_release }}"
+
+      spec:
+
+        selector:
+          matchLabels:
+            app: cadvisor
+
+        namespaceSelector:
+          matchNames:
+            - "{{ cadvisor_namespace }}"
+
+        endpoints:
+
+          - port: metrics
+            path: /metrics
+            interval: 15s
+            scrapeTimeout: 10s

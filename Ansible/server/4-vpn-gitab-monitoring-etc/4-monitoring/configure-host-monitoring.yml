@@ -1,0 +1,295 @@
+---
+- name: Configure host monitoring
+  hosts: servers
+  become: true
+  gather_facts: true
+
+  vars_files:
+    - "{{ playbook_dir }}/../group_vars/all.yml"
+
+  collections:
+    - community.general
+
+  vars:
+    node_exporter_textfile_dir: "/var/lib/prometheus/node-exporter"
+    wireguard_metrics_script: "/usr/local/bin/wireguard-metrics"
+    wireguard_metrics_metrics_file: "{{ node_exporter_textfile_dir }}/wireguard.prom"
+
+  tasks:
+
+    # ============================================================
+    # Validation
+    # ============================================================
+
+    - name: Validate WireGuard peer names
+      ansible.builtin.assert:
+        that:
+          - item.name is defined
+          - item.name | length > 0
+          - item.name is match('^[A-Za-z0-9._-]+$')
+        fail_msg: "Invalid WireGuard peer name: {{ item.name | default('undefined') }}"
+      loop: "{{ wg_peers }}"
+      loop_control:
+        label: "{{ item.id }}"
+
+    - name: Validate WireGuard peer names are unique
+      ansible.builtin.assert:
+        that:
+          - >-
+            wg_peers | map(attribute='name') | list | unique | length
+            ==
+            wg_peers | length
+        fail_msg: "WireGuard peer names must be unique."
+
+    - name: Validate WireGuard peer addresses are unique
+      ansible.builtin.assert:
+        that:
+          - >-
+            wg_peers | map(attribute='address') | list | unique | length
+            ==
+            wg_peers | length
+        fail_msg: "WireGuard peer addresses must be unique."
+
+    # ============================================================
+    # node_exporter
+    # ============================================================
+
+    - name: Install node_exporter
+      ansible.builtin.apt:
+        name: prometheus-node-exporter
+        state: present
+        update_cache: true
+
+    - name: Create node_exporter textfile directory
+      ansible.builtin.file:
+        path: "{{ node_exporter_textfile_dir }}"
+        state: directory
+        owner: prometheus
+        group: prometheus
+        mode: "0755"
+
+    - name: Configure node_exporter textfile collector
+      ansible.builtin.lineinfile:
+        path: /etc/default/prometheus-node-exporter
+        regexp: '^ARGS='
+        line: >-
+          ARGS="--collector.textfile.directory={{ node_exporter_textfile_dir }}"
+        create: true
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart node_exporter
+
+    # ============================================================
+    # WireGuard metrics collector
+    # ============================================================
+
+    - name: Install WireGuard metrics collector
+      ansible.builtin.copy:
+        dest: "{{ wireguard_metrics_script }}"
+        owner: root
+        group: root
+        mode: "0755"
+        content: |
+          #!/bin/bash
+
+          set -euo pipefail
+
+          METRICS_DIR="{{ node_exporter_textfile_dir }}"
+          METRICS_FILE="{{ wireguard_metrics_metrics_file }}"
+
+          TMP_FILE="$(mktemp "${METRICS_DIR}/wireguard.prom.XXXXXX")"
+
+          cleanup() {
+              rm -f "${TMP_FILE}"
+          }
+
+          trap cleanup EXIT
+
+          declare -A PEER_NAME
+          declare -A PEER_GROUP
+
+          {% for peer in wg_peers %}
+          PEER_NAME["{{ peer.address }}/32"]="{{ peer.name }}"
+          PEER_GROUP["{{ peer.address }}/32"]="{{ peer.group }}"
+          {% endfor %}
+
+          cat > "${TMP_FILE}" <<'EOF'
+          # HELP wireguard_up Whether the WireGuard interface wg0 is available.
+          # TYPE wireguard_up gauge
+
+          # HELP wireguard_peer_receive_bytes_total Total bytes received from a WireGuard peer.
+          # TYPE wireguard_peer_receive_bytes_total counter
+
+          # HELP wireguard_peer_transmit_bytes_total Total bytes transmitted to a WireGuard peer.
+          # TYPE wireguard_peer_transmit_bytes_total counter
+
+          # HELP wireguard_peer_latest_handshake_seconds Unix timestamp of the latest WireGuard peer handshake.
+          # TYPE wireguard_peer_latest_handshake_seconds gauge
+          EOF
+
+          if ! WG_DUMP="$(/usr/bin/wg show wg0 dump 2>/dev/null)"; then
+              echo "wireguard_up 0" >> "${TMP_FILE}"
+              chown prometheus:prometheus "${TMP_FILE}"
+              chmod 0644 "${TMP_FILE}"
+              mv "${TMP_FILE}" "${METRICS_FILE}"
+              trap - EXIT
+              exit 0
+          fi
+
+          echo "wireguard_up 1" >> "${TMP_FILE}"
+
+          while read -r \
+              public_key \
+              preshared_key \
+              endpoint \
+              allowed_ips \
+              latest_handshake \
+              rx_bytes \
+              tx_bytes \
+              persistent_keepalive
+          do
+              address="${allowed_ips%%,*}"
+
+              name="${PEER_NAME[${address}]:-unknown}"
+              group="${PEER_GROUP[${address}]:-unknown}"
+
+              printf \
+                'wireguard_peer_receive_bytes_total{name="%s",group="%s",address="%s"} %s\n' \
+                "${name}" \
+                "${group}" \
+                "${address}" \
+                "${rx_bytes}" \
+                >> "${TMP_FILE}"
+
+              printf \
+                'wireguard_peer_transmit_bytes_total{name="%s",group="%s",address="%s"} %s\n' \
+                "${name}" \
+                "${group}" \
+                "${address}" \
+                "${tx_bytes}" \
+                >> "${TMP_FILE}"
+
+              printf \
+                'wireguard_peer_latest_handshake_seconds{name="%s",group="%s",address="%s"} %s\n' \
+                "${name}" \
+                "${group}" \
+                "${address}" \
+                "${latest_handshake}" \
+                >> "${TMP_FILE}"
+
+          done < <(tail -n +2 <<< "${WG_DUMP}")
+
+          chown prometheus:prometheus "${TMP_FILE}"
+          chmod 0644 "${TMP_FILE}"
+
+          mv "${TMP_FILE}" "${METRICS_FILE}"
+
+          trap - EXIT
+
+    # ============================================================
+    # WireGuard metrics systemd service
+    # ============================================================
+
+    - name: Install WireGuard metrics service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/wireguard-metrics.service
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=WireGuard metrics collector
+          After=wg-quick@wg0.service
+          Wants=wg-quick@wg0.service
+
+          [Service]
+          Type=oneshot
+          ExecStart={{ wireguard_metrics_script }}
+
+    - name: Install WireGuard metrics timer
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/wireguard-metrics.timer
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Update WireGuard metrics
+
+          [Timer]
+          OnBootSec=15s
+          OnUnitActiveSec=15s
+          AccuracySec=1s
+
+          [Install]
+          WantedBy=timers.target
+
+    # ============================================================
+    # Firewall
+    # ============================================================
+
+    - name: Allow node_exporter from Kubernetes Pod CIDR
+      community.general.ufw:
+        rule: allow
+        from_ip: "{{ kube_pod_cidr }}"
+        to_port: "9100"
+        proto: tcp
+
+    # ============================================================
+    # Services
+    # ============================================================
+
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Enable and start node_exporter
+      ansible.builtin.systemd:
+        name: prometheus-node-exporter
+        enabled: true
+        state: started
+
+    - name: Enable WireGuard metrics timer
+      ansible.builtin.systemd:
+        name: wireguard-metrics.timer
+        enabled: true
+        state: started
+
+    - name: Generate initial WireGuard metrics
+      ansible.builtin.systemd:
+        name: wireguard-metrics.service
+        state: started
+
+    # ============================================================
+    # Verification
+    # ============================================================
+
+    - name: Check node_exporter metrics
+      ansible.builtin.uri:
+        url: http://127.0.0.1:9100/metrics
+        return_content: true
+      register: node_exporter_metrics
+      changed_when: false
+
+    - name: Validate node_exporter
+      ansible.builtin.assert:
+        that:
+          - node_exporter_metrics.status == 200
+          - "'node_cpu_seconds_total' in node_exporter_metrics.content"
+        fail_msg: "node_exporter is not exposing host metrics."
+
+    - name: Validate WireGuard metrics
+      ansible.builtin.assert:
+        that:
+          - "'wireguard_up' in node_exporter_metrics.content"
+          - "'wireguard_peer_receive_bytes_total' in node_exporter_metrics.content"
+          - "'wireguard_peer_transmit_bytes_total' in node_exporter_metrics.content"
+        fail_msg: "WireGuard metrics are not available."
+
+  handlers:
+
+    - name: Restart node_exporter
+      ansible.builtin.systemd:
+        name: prometheus-node-exporter
+        state: restarted

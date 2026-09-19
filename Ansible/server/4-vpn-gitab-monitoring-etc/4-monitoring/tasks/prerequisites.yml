@@ -1,0 +1,51 @@
+---
+# ============================================================
+# Prerequisites
+# ============================================================
+
+- name: Install Python Kubernetes client
+  ansible.builtin.apt:
+    name:
+      - python3-kubernetes
+    state: present
+    update_cache: true
+
+- name: Check kubectl access to Kubernetes API
+  ansible.builtin.command:
+    cmd: >-
+      kubectl
+      --kubeconfig={{ kubeconfig }}
+      version
+      --output=json
+  register: kubectl_version
+  changed_when: false
+
+- name: Check Helm availability
+  ansible.builtin.command:
+    cmd: helm version --short
+  register: helm_version
+  changed_when: false
+
+# ============================================================
+# Monitoring namespace
+# ============================================================
+
+- name: Ensure monitoring namespace exists
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig }}"
+    api_version: v1
+    kind: Namespace
+    name: "{{ namespace_monitoring }}"
+    state: present
+
+# ============================================================
+# Helm repository
+#
+# Cilium, MetalLB, cert-manager and external-dns repositories
+# are already configured by the Kubernetes infrastructure playbook.
+# ============================================================
+
+- name: Add Prometheus Community Helm repository
+  kubernetes.core.helm_repository:
+    name: prometheus-community
+    repo_url: "{{ kube_prometheus_stack_chart_repo }}"

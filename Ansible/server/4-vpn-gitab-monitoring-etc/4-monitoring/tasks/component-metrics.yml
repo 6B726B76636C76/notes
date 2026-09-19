@@ -1,0 +1,134 @@
+---
+# ============================================================
+# MetalLB
+# ============================================================
+
+- name: Enable MetalLB Prometheus metrics
+  kubernetes.core.helm:
+    kubeconfig: "{{ kubeconfig }}"
+    name: metallb
+    chart_ref: metallb/metallb
+    chart_version: "{{ metallb_chart_version }}"
+    release_namespace: metallb-system
+    state: present
+    reuse_values: true
+    reset_values: false
+    wait: false
+
+    values:
+      prometheus:
+        rbacPrometheus: true
+
+        serviceAccount: "monitoring-kube-prometheus-stack-prometheus"
+
+        namespace: "{{ namespace_monitoring }}"
+
+        serviceMonitor:
+          enabled: true
+
+          speaker:
+            additionalLabels:
+              release: "{{ monitoring_release }}"
+
+          controller:
+            additionalLabels:
+              release: "{{ monitoring_release }}"
+
+
+# ============================================================
+# cert-manager
+# ============================================================
+
+- name: Enable cert-manager Prometheus metrics
+  kubernetes.core.helm:
+    kubeconfig: "{{ kubeconfig }}"
+    name: cert-manager
+    chart_ref: jetstack/cert-manager
+    release_namespace: cert-manager
+    state: present
+    reuse_values: true
+    reset_values: false
+    wait: false
+
+    values:
+      prometheus:
+        enabled: true
+
+        servicemonitor:
+          enabled: true
+          labels:
+            release: "{{ monitoring_release }}"
+
+        podmonitor:
+          enabled: false
+
+
+# ============================================================
+# external-dns
+# ============================================================
+
+- name: Enable external-dns Prometheus metrics
+  kubernetes.core.helm:
+    kubeconfig: "{{ kubeconfig }}"
+    name: external-dns
+    chart_ref: external-dns/external-dns
+    release_namespace: external-dns
+    state: present
+    reuse_values: true
+    reset_values: false
+    wait: false
+
+    values:
+      serviceMonitor:
+        enabled: true
+        interval: 15s
+
+        additionalLabels:
+          release: "{{ monitoring_release }}"
+
+
+# ============================================================
+# Cilium
+# ============================================================
+
+- name: Enable Cilium Prometheus ServiceMonitors
+  kubernetes.core.helm:
+    kubeconfig: "{{ kubeconfig }}"
+    name: cilium
+    chart_ref: cilium/cilium
+    chart_version: "1.19.8"
+    release_namespace: kube-system
+    state: present
+    reuse_values: true
+    reset_values: false
+    wait: false
+
+    values:
+      prometheus:
+        enabled: true
+
+        serviceMonitor:
+          enabled: true
+
+          labels:
+            release: "{{ monitoring_release }}"
+
+      envoy:
+        prometheus:
+          enabled: true
+
+          serviceMonitor:
+            enabled: true
+
+            labels:
+              release: "{{ monitoring_release }}"
+
+      operator:
+        prometheus:
+          enabled: true
+
+          serviceMonitor:
+            enabled: true
+
+            labels:
+              release: "{{ monitoring_release }}"

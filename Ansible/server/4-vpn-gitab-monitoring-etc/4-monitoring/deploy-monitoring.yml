@@ -1,0 +1,47 @@
+---
+- name: Deploy monitoring stack
+  hosts: servers
+  become: true
+  gather_facts: true
+
+  vars_files:
+    - "{{ playbook_dir }}/../group_vars/all.yml"
+
+  collections:
+    - kubernetes.core
+
+  vars:
+    kubeconfig: "{{ kubeconfig_path }}"
+
+    monitoring_release: "monitoring"
+    cadvisor_namespace: "{{ namespace_monitoring }}"
+    cadvisor_image: "ghcr.io/google/cadvisor:0.55.1"
+
+    cilium_chart_version: "1.16.5"
+    metallb_chart_version: "0.14.9"
+
+  tasks:
+
+    - name: Run monitoring prerequisites
+      ansible.builtin.import_tasks:
+        file: tasks/prerequisites.yml
+
+    - name: Configure Prometheus and Grafana
+      ansible.builtin.import_tasks:
+        file: tasks/prometheus.yml
+
+    - name: Configure Grafana Ingress
+      ansible.builtin.include_tasks:
+        file: tasks/grafana-ingress.yml
+
+    - name: Configure cAdvisor
+      ansible.builtin.import_tasks:
+        file: tasks/cadvisor.yml
+
+    - name: Enable component metrics
+      ansible.builtin.import_tasks:
+        file: tasks/component-metrics.yml
+
+    - name: Verify monitoring stack
+      ansible.builtin.import_tasks:
+        file: tasks/verification.yml

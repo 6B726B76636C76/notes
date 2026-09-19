@@ -1,0 +1,97 @@
+---
+# ============================================================
+# kube-prometheus-stack
+# ============================================================
+
+- name: Deploy kube-prometheus-stack
+  kubernetes.core.helm:
+    kubeconfig: "{{ kubeconfig }}"
+    name: "{{ monitoring_release }}"
+    chart_ref: "prometheus-community/{{ kube_prometheus_stack_chart }}"
+    chart_version: >-
+      {{
+        kube_prometheus_stack_version
+        if kube_prometheus_stack_version
+        else omit
+      }}
+    release_namespace: "{{ namespace_monitoring }}"
+    create_namespace: false
+    wait: true
+    wait_timeout: "10m"
+
+    values:
+
+      # --------------------------------------------------------
+      # Grafana
+      # --------------------------------------------------------
+
+      grafana:
+        enabled: true
+        replicas: 1
+
+        resources:
+          requests:
+            memory: "{{ grafana_request_memory }}"
+          limits:
+            memory: "{{ grafana_limit_memory }}"
+
+      # --------------------------------------------------------
+      # Prometheus
+      # --------------------------------------------------------
+
+      prometheus:
+        enabled: true
+
+        prometheusSpec:
+          replicas: 1
+          retention: 3d
+
+          resources:
+            requests:
+              memory: "{{ prometheus_request_memory }}"
+            limits:
+              memory: "{{ prometheus_limit_memory }}"
+
+          # ----------------------------------------------------
+          # External VPS metrics
+          # ----------------------------------------------------
+
+          additionalScrapeConfigs:
+
+            - job_name: "vps-node-exporter"
+
+              scrape_interval: 15s
+              scrape_timeout: 10s
+
+              static_configs:
+
+                - targets:
+                    - "{{ ansible_facts['default_ipv4']['address'] }}:9100"
+
+                  labels:
+                    source: "vps"
+                    host: "{{ inventory_hostname }}"
+
+      # --------------------------------------------------------
+      # Alertmanager
+      # --------------------------------------------------------
+
+      alertmanager:
+        enabled: false
+
+      # --------------------------------------------------------
+      # Kubernetes state metrics
+      # --------------------------------------------------------
+
+      kube-state-metrics:
+        enabled: true
+
+      # --------------------------------------------------------
+      # Kubernetes node-exporter
+      #
+      # Host node_exporter is installed separately by
+      # configure-host-monitoring.yml.
+      # --------------------------------------------------------
+
+      nodeExporter:
+        enabled: false

@@ -1,0 +1,30 @@
+---
+- name: Create Grafana Ingress
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: /home/ansible/.kube/config
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: grafana
+        namespace: monitoring
+        annotations:
+          cert-manager.io/cluster-issuer: letsencrypt-cloudflare
+      spec:
+        ingressClassName: cilium
+        tls:
+          - hosts:
+              - grafana.krkvclv.com
+            secretName: grafana-tls
+        rules:
+          - host: grafana.krkvclv.com
+            http:
+              paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: monitoring-grafana
+                      port:
+                        number: 80

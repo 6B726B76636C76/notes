@@ -4,3 +4,5 @@ server/1-ssh-access/host_vars/vpc.yml
 server/1-ssh-access/inventory.ini
 server/2-security/playbook.yml
 server/3-basic-apps/host_vars/vpc.yml
+server/4-vpn-gitab-monitoring-etc/group_vars/all.yml
+server/4-vpn-gitab-monitoring-etc/group_vars/secrets.yml

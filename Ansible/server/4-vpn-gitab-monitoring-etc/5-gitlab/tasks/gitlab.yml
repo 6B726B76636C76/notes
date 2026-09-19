@@ -1,0 +1,321 @@
+---
+# ============================================================
+# Preconditions
+# ============================================================
+
+- name: Check Kubernetes API access
+  ansible.builtin.command:
+    cmd: kubectl version --client
+  changed_when: false
+
+- name: Check Helm
+  ansible.builtin.command:
+    cmd: helm version --short
+  changed_when: false
+
+
+# ============================================================
+# Storage
+# ============================================================
+
+- name: Install local-path-provisioner
+  ansible.builtin.command:
+    cmd: >
+      kubectl apply
+      -f https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.37/deploy/local-path-storage.yaml
+  register: local_path_install
+  changed_when: >
+    'created' in local_path_install.stdout or
+    'configured' in local_path_install.stdout
+
+- name: Wait for local-path-provisioner
+  ansible.builtin.command:
+    cmd: >
+      kubectl rollout status
+      deployment/local-path-provisioner
+      -n local-path-storage
+      --timeout=180s
+  changed_when: false
+
+- name: Verify local-path StorageClass
+  ansible.builtin.command:
+    cmd: kubectl get storageclass {{ storage_class }}
+  changed_when: false
+
+
+# ============================================================
+# Namespace
+# ============================================================
+
+- name: Create GitLab namespace
+  ansible.builtin.shell: |
+    kubectl create namespace "{{ gitlab_namespace }}" \
+      --dry-run=client \
+      -o yaml | kubectl apply -f -
+  register: gitlab_namespace_result
+  changed_when: >
+    'created' in gitlab_namespace_result.stdout or
+    'configured' in gitlab_namespace_result.stdout
+
+
+# ============================================================
+# PostgreSQL
+# ============================================================
+
+- name: Render GitLab PostgreSQL Secret
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../templates/gitlab/gitlab-postgres-secret.yaml.j2"
+    dest: "/tmp/gitlab-postgres-secret.yaml"
+    mode: "0600"
+
+- name: Apply GitLab PostgreSQL Secret
+  ansible.builtin.command:
+    cmd: kubectl apply -f /tmp/gitlab-postgres-secret.yaml
+  register: gitlab_postgres_secret_apply
+  changed_when: >
+    'created' in gitlab_postgres_secret_apply.stdout or
+    'configured' in gitlab_postgres_secret_apply.stdout
+
+- name: Remove temporary PostgreSQL Secret manifest
+  ansible.builtin.file:
+    path: "/tmp/gitlab-postgres-secret.yaml"
+    state: absent
+
+- name: Render GitLab PostgreSQL Cluster
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../templates/gitlab/gitlab-postgres-cluster.yaml.j2"
+    dest: "/tmp/gitlab-postgres-cluster.yaml"
+    mode: "0600"
+
+- name: Apply GitLab PostgreSQL Cluster
+  ansible.builtin.command:
+    cmd: kubectl apply -f /tmp/gitlab-postgres-cluster.yaml
+  register: gitlab_postgres_cluster_apply
+  changed_when: >
+    'created' in gitlab_postgres_cluster_apply.stdout or
+    'configured' in gitlab_postgres_cluster_apply.stdout
+
+- name: Remove temporary PostgreSQL Cluster manifest
+  ansible.builtin.file:
+    path: "/tmp/gitlab-postgres-cluster.yaml"
+    state: absent
+
+- name: Wait for GitLab PostgreSQL cluster
+  ansible.builtin.command:
+    cmd: >
+      kubectl wait
+      --for=condition=Ready
+      cluster/{{ gitlab_postgres_cluster }}
+      -n {{ gitlab_namespace }}
+      --timeout=10m
+  changed_when: false
+
+- name: Verify PostgreSQL password Secret
+  ansible.builtin.command:
+    cmd: >
+      kubectl get secret
+      "{{ gitlab_postgres_password_secret }}"
+      -n "{{ gitlab_namespace }}"
+  changed_when: false
+
+- name: Verify PostgreSQL read-write Service
+  ansible.builtin.command:
+    cmd: >
+      kubectl get service
+      "{{ gitlab_postgres_service }}"
+      -n "{{ gitlab_namespace }}"
+  changed_when: false
+
+
+# ============================================================
+# Valkey
+# ============================================================
+
+- name: Add Valkey Helm repository
+  ansible.builtin.command:
+    cmd: >
+      helm repo add valkey
+      "{{ gitlab_valkey_chart_repo }}"
+      --force-update
+  changed_when: false
+
+- name: Update Valkey Helm repository
+  ansible.builtin.command:
+    cmd: helm repo update
+  changed_when: false
+
+- name: Render GitLab Valkey Secret
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../templates/gitlab/gitlab-valkey-secret.yaml.j2"
+    dest: "/tmp/gitlab-valkey-secret.yaml"
+    mode: "0600"
+  no_log: true
+
+- name: Apply GitLab Valkey Secret
+  ansible.builtin.command:
+    cmd: kubectl apply -f /tmp/gitlab-valkey-secret.yaml
+  register: gitlab_valkey_secret_apply
+  changed_when: >
+    'created' in gitlab_valkey_secret_apply.stdout or
+    'configured' in gitlab_valkey_secret_apply.stdout
+  no_log: true
+
+- name: Remove temporary Valkey Secret manifest
+  ansible.builtin.file:
+    path: "/tmp/gitlab-valkey-secret.yaml"
+    state: absent
+
+- name: Render GitLab Valkey values
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../templates/gitlab/gitlab-valkey-values.yaml.j2"
+    dest: "/tmp/gitlab-valkey-values.yaml"
+    mode: "0600"
+
+- name: Install or upgrade GitLab Valkey
+  ansible.builtin.command:
+    cmd: >
+      helm upgrade --install
+      "{{ gitlab_valkey_release }}"
+      valkey/valkey
+      --namespace "{{ gitlab_namespace }}"
+      --version "{{ gitlab_valkey_chart_version }}"
+      --timeout 10m
+      --wait
+      --values /tmp/gitlab-valkey-values.yaml
+
+- name: Remove temporary Valkey values
+  ansible.builtin.file:
+    path: "/tmp/gitlab-valkey-values.yaml"
+    state: absent
+
+- name: Verify Valkey password Secret
+  ansible.builtin.command:
+    cmd: >
+      kubectl get secret
+      "{{ gitlab_redis_password_secret }}"
+      -n "{{ gitlab_namespace }}"
+  changed_when: false
+
+- name: Verify Valkey Service
+  ansible.builtin.command:
+    cmd: >
+      kubectl get service
+      "{{ gitlab_valkey_service }}"
+      -n "{{ gitlab_namespace }}"
+  changed_when: false
+
+- name: Verify Valkey pod
+  ansible.builtin.command:
+    cmd: >
+      kubectl get pods
+      -n "{{ gitlab_namespace }}"
+      -l app.kubernetes.io/instance={{ gitlab_valkey_release }}
+      -o wide
+  changed_when: false
+
+
+# ============================================================
+# Object storage
+# ============================================================
+
+- name: Verify object storage Secret
+  ansible.builtin.command:
+    cmd: >
+      kubectl get secret
+      "{{ gitlab_object_storage_secret }}"
+      -n "{{ gitlab_namespace }}"
+  changed_when: false
+
+- name: Configure GitLab Toolbox S3cmd
+  ansible.builtin.include_tasks:
+    file: gitlab-s3cmd.yml
+
+
+# ============================================================
+# Helm repository
+# ============================================================
+
+- name: Add GitLab Helm repository
+  ansible.builtin.command:
+    cmd: >
+      helm repo add gitlab
+      "{{ gitlab_chart_repo }}"
+      --force-update
+  changed_when: false
+
+- name: Update Helm repositories
+  ansible.builtin.command:
+    cmd: helm repo update
+  changed_when: false
+
+
+# ============================================================
+# Render values
+# ============================================================
+
+- name: Render GitLab values
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../templates/gitlab/gitlab-values.yaml.j2"
+    dest: /tmp/gitlab-values.yaml
+    mode: "0600"
+
+
+# ============================================================
+# Install / Upgrade
+# ============================================================
+
+- name: Install or upgrade GitLab
+  ansible.builtin.command:
+    cmd: >
+      helm upgrade --install "{{ gitlab_release }}"
+      gitlab/gitlab
+      --namespace "{{ gitlab_namespace }}"
+      --version "{{ gitlab_chart_version }}"
+      --timeout 30m
+      --wait
+      --wait-for-jobs
+      --values /tmp/gitlab-values.yaml
+  register: gitlab_helm_result
+  changed_when: >
+    'STATUS: deployed' in gitlab_helm_result.stdout or
+    'STATUS: upgraded' in gitlab_helm_result.stdout
+
+
+# ============================================================
+# Diagnostics
+# ============================================================
+
+- name: Show GitLab pods
+  ansible.builtin.command:
+    cmd: >
+      kubectl get pods
+      -n "{{ gitlab_namespace }}"
+      -o wide
+  register: gitlab_pods
+  changed_when: false
+
+- name: Print GitLab pods
+  ansible.builtin.debug:
+    var: gitlab_pods.stdout_lines
+
+- name: Show GitLab Helm release
+  ansible.builtin.command:
+    cmd: >
+      helm status "{{ gitlab_release }}"
+      -n "{{ gitlab_namespace }}"
+  register: gitlab_status
+  changed_when: false
+
+- name: Print GitLab Helm status
+  ansible.builtin.debug:
+    var: gitlab_status.stdout_lines
+
+
+# ============================================================
+# Cleanup
+# ============================================================
+
+- name: Remove temporary GitLab values
+  ansible.builtin.file:
+    path: /tmp/gitlab-values.yaml
+    state: absent

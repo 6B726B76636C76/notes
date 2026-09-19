@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: "{{ gitlab_object_storage_s3cmd_secret }}"
+  namespace: "{{ gitlab_namespace }}"
+type: Opaque
+stringData:
+  config: |
+    [default]
+    access_key = {{ garage_access_key }}
+    secret_key = {{ garage_secret_key }}
+    host_base = garage.{{ gitlab_namespace }}.svc.cluster.local:3900
+    host_bucket = garage.{{ gitlab_namespace }}.svc.cluster.local:3900
+    use_https = False

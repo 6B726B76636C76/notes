@@ -1,0 +1,48 @@
+---
+fullnameOverride: "{{ gitlab_valkey_service }}"
+
+image:
+  registry: "docker.io"
+  repository: "valkey/valkey"
+  tag: "{{ gitlab_valkey_image_tag }}"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 6379
+
+resources:
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+  limits:
+    cpu: "500m"
+    memory: "512Mi"
+
+dataStorage:
+  enabled: true
+  requestedSize: "{{ gitlab_valkey_storage_size }}"
+  className: "{{ storage_class }}"
+  accessModes:
+    - ReadWriteOnce
+  keepPvc: true
+
+replica:
+  enabled: false
+
+deploymentStrategy: Recreate
+
+auth:
+  enabled: true
+  usersExistingSecret: "{{ gitlab_redis_password_secret }}"
+  aclUsers:
+    default:
+      permissions: "~* &* +@all"
+      passwordKey: "{{ gitlab_redis_password_key }}"
+
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    additionalLabels:
+      release: "monitoring"

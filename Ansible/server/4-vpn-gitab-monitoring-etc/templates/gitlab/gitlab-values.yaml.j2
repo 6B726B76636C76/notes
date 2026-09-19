@@ -1,0 +1,213 @@
+---
+global:
+  edition: "{{ gitlab_edition }}"
+
+  gitlabVersion: "19.3.2"
+
+  hosts:
+    domain: "krkvclv.com"
+    https: true
+
+    gitlab:
+      name: "{{ gitlab_domain }}"
+      https: true
+
+    ssh: "{{ gitlab_domain }}"
+
+  ingress:
+    enabled: true
+    class: "cilium"
+    configureCertmanager: false
+
+    annotations:
+      cert-manager.io/cluster-issuer: "{{ cert_manager_cluster_issuer }}"
+
+    tls:
+      enabled: true
+      secretName: "{{ gitlab_tls_secret }}"
+
+  # Existing Cilium ingress is used instead.
+  gatewayApi:
+    enabled: false
+    installEnvoy: false
+    configureCertmanager: false
+
+  # External PostgreSQL.
+  psql:
+    host: "{{ gitlab_postgres_service }}"
+    port: 5432
+    database: "{{ gitlab_postgres_database }}"
+    username: "{{ gitlab_postgres_username }}"
+
+    password:
+      useSecret: true
+      secret: "{{ gitlab_postgres_password_secret }}"
+      key: "{{ gitlab_postgres_password_key }}"
+
+  # External Valkey.
+  redis:
+    host: "{{ gitlab_valkey_service }}"
+    port: 6379
+
+    auth:
+      enabled: true
+      secret: "{{ gitlab_redis_password_secret }}"
+      key: "{{ gitlab_redis_password_key }}"
+
+  # External object storage.
+  appConfig:
+    enableUsagePing: false
+
+    object_store:
+      enabled: true
+      proxy_download: true
+
+      connection:
+        secret: "{{ gitlab_object_storage_secret }}"
+        key: "{{ gitlab_object_storage_key }}"
+
+    lfs:
+      enabled: true
+
+    artifacts:
+      enabled: true
+
+    uploads:
+      enabled: true
+
+    packages:
+      enabled: true
+
+  # GitLab SSH.
+  #
+  # 2424 = external SSH port shown by GitLab.
+  # 30424 = Kubernetes NodePort handled outside this chart.
+  shell:
+    port: {{ gitlab_ssh_port }}
+
+    tcp:
+      proxyProtocol: false
+
+  # GitLab's own Registry is completely disabled.
+  # Harbor is used as a separate registry.
+  registry:
+    enabled: false
+
+
+# ============================================================
+# Disable bundled infrastructure
+# ============================================================
+
+nginx-ingress:
+  enabled: false
+
+installCertmanager: false
+
+prometheus:
+  install: false
+
+registry:
+  enabled: false
+
+gitlab-runner:
+  install: false
+
+gitlab-zoekt:
+  install: false
+
+openbao:
+  install: false
+
+traefik:
+  install: false
+
+haproxy:
+  install: false
+
+
+# ============================================================
+# Webservice
+# ============================================================
+
+gitlab:
+  webservice:
+    replicaCount: 1
+
+    workerProcesses: {{ gitlab_webservice_workers }}
+
+    resources:
+      requests:
+        memory: "{{ gitlab_webservice_request_memory }}"
+      limits:
+        memory: "{{ gitlab_webservice_limit_memory }}"
+
+
+# ============================================================
+# Sidekiq
+# ============================================================
+
+  sidekiq:
+    replicas: 1
+
+    resources:
+      requests:
+        memory: "{{ gitlab_sidekiq_request_memory }}"
+      limits:
+        memory: "{{ gitlab_sidekiq_limit_memory }}"
+
+
+# ============================================================
+# Gitaly
+# ============================================================
+
+  gitaly:
+    replicas: 1
+
+    resources:
+      requests:
+        memory: "{{ gitlab_gitaly_request_memory }}"
+      limits:
+        memory: "{{ gitlab_gitaly_limit_memory }}"
+
+    persistence:
+      enabled: true
+      accessMode: ReadWriteOnce
+      size: "{{ gitlab_gitaly_storage_size }}"
+{% if storage_class | length > 0 %}
+      storageClass: "{{ storage_class }}"
+{% endif %}
+
+
+# ============================================================
+# Toolbox
+# ============================================================
+
+  toolbox:
+    replicas: 1
+
+    backups:
+      objectStorage:
+        backend: s3
+        config:
+          secret: "{{ gitlab_toolbox_s3cmd_secret }}"
+          key: config
+
+    resources:
+      requests:
+        memory: "{{ gitlab_toolbox_request_memory }}"
+      limits:
+        memory: "{{ gitlab_toolbox_limit_memory }}"
+
+# ============================================================
+# GitLab Shell
+# ============================================================
+
+  gitlab-shell:
+    enabled: true
+
+    service:
+      type: ClusterIP
+      externalIPs:
+        - "{{ gitlab_ssh_external_ip }}"
+      internalPort: 2222
+      externalTrafficPolicy: Cluster

@@ -1,0 +1,122 @@
+---
+# ============================================================
+# GitLab Runner Manager in Kubernetes
+# ============================================================
+
+- name: Validate Runner configuration
+  ansible.builtin.assert:
+    that:
+      - runner_config.name is defined
+      - runner_config.name | length > 0
+      - runner_config.token is defined
+      - runner_config.token | length > 0
+      - runner_config.concurrent is defined
+      - runner_config.concurrent | int > 0
+      - runner_config.image is defined
+      - runner_config.privileged is defined
+    fail_msg: "Invalid GitLab Runner configuration."
+
+# ============================================================
+# Helm repository
+# ============================================================
+
+- name: Add GitLab Helm repository
+  ansible.builtin.command:
+    cmd: >
+      helm repo add gitlab
+      "{{ gitlab_runner_chart_repo }}"
+      --force-update
+  changed_when: false
+
+- name: Update Helm repositories
+  ansible.builtin.command:
+    cmd: helm repo update
+  changed_when: false
+
+# ============================================================
+# Namespace
+# ============================================================
+
+- name: Check GitLab Runner namespace
+  ansible.builtin.command:
+    cmd: >
+      kubectl get namespace "{{ gitlab_runner_namespace }}"
+  register: runner_namespace_check
+  changed_when: false
+  failed_when: false
+
+- name: Create GitLab Runner namespace
+  ansible.builtin.command:
+    cmd: >
+      kubectl create namespace "{{ gitlab_runner_namespace }}"
+  when: runner_namespace_check.rc != 0
+
+# ============================================================
+# Runner configuration
+# ============================================================
+
+- name: Render GitLab Runner values
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../templates/gitlab-runner/values.yaml.j2"
+    dest: "/tmp/{{ runner_config.name }}-runner-values.yaml"
+    mode: "0600"
+  no_log: true
+
+# ============================================================
+# Install / upgrade Runner Manager
+# ============================================================
+
+- name: Install or upgrade GitLab Runner Manager
+  ansible.builtin.command:
+    cmd: >
+      helm upgrade --install
+      "{{ runner_config.name }}"
+      gitlab/gitlab-runner
+      --namespace "{{ gitlab_runner_namespace }}"
+      --version "{{ gitlab_runner_chart_version }}"
+      --wait
+      --timeout 10m
+      --values "/tmp/{{ runner_config.name }}-runner-values.yaml"
+  register: runner_helm_result
+  changed_when: >
+    'STATUS: deployed' in runner_helm_result.stdout or
+    'STATUS: upgraded' in runner_helm_result.stdout
+  no_log: true
+
+# ============================================================
+# Cleanup
+# ============================================================
+
+- name: Remove temporary Runner values
+  ansible.builtin.file:
+    path: "/tmp/{{ runner_config.name }}-runner-values.yaml"
+    state: absent
+
+# ============================================================
+# Verification
+# ============================================================
+
+- name: Show GitLab Runner releases
+  ansible.builtin.command:
+    cmd: >
+      helm list
+      -n "{{ gitlab_runner_namespace }}"
+  register: runner_releases
+  changed_when: false
+
+- name: Show GitLab Runner pods
+  ansible.builtin.command:
+    cmd: >
+      kubectl get pods
+      -n "{{ gitlab_runner_namespace }}"
+      -o wide
+  register: runner_pods
+  changed_when: false
+
+- name: Print GitLab Runner releases
+  ansible.builtin.debug:
+    var: runner_releases.stdout_lines
+
+- name: Print GitLab Runner pods
+  ansible.builtin.debug:
+    var: runner_pods.stdout_lines

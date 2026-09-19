@@ -1,0 +1,25 @@
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: "{{ gitlab_postgres_cluster }}"
+  namespace: "{{ gitlab_namespace }}"
+spec:
+  instances: {{ gitlab_postgres_instances }}
+
+  imageName: "{{ gitlab_postgres_image }}"
+
+  bootstrap:
+    initdb:
+      database: "{{ gitlab_postgres_database }}"
+      owner: "{{ gitlab_postgres_username }}"
+      secret:
+        name: "{{ gitlab_postgres_password_secret }}"
+
+  postgresql:
+    parameters:
+      max_locks_per_transaction: "512"
+
+  storage:
+    size: "{{ gitlab_postgres_storage_size }}"
+    storageClass: "{{ storage_class }}"

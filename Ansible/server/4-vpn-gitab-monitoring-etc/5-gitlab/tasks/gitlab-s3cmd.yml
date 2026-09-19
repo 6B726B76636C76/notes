@@ -1,0 +1,68 @@
+---
+# ============================================================
+# GitLab Toolbox S3cmd configuration
+# ============================================================
+
+- name: Read GitLab object storage Secret
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: "{{ gitlab_namespace }}"
+    name: "{{ gitlab_object_storage_secret }}"
+  register: gitlab_object_storage_secret_info
+  failed_when:
+    - gitlab_object_storage_secret_info.resources | length != 1
+
+- name: Decode GitLab object storage configuration
+  ansible.builtin.set_fact:
+    gitlab_object_storage_config: >-
+      {{
+        gitlab_object_storage_secret_info.resources[0].data[gitlab_object_storage_key]
+        | b64decode
+        | from_yaml
+      }}
+  no_log: true
+
+- name: Validate GitLab object storage configuration
+  ansible.builtin.assert:
+    that:
+      - gitlab_object_storage_config.aws_access_key_id is defined
+      - gitlab_object_storage_config.aws_access_key_id | length > 0
+      - gitlab_object_storage_config.aws_secret_access_key is defined
+      - gitlab_object_storage_config.aws_secret_access_key | length > 0
+      - gitlab_object_storage_config.endpoint is defined
+      - gitlab_object_storage_config.endpoint | length > 0
+    fail_msg: >-
+      GitLab object storage Secret does not contain
+      aws_access_key_id, aws_secret_access_key or endpoint.
+  no_log: true
+
+- name: Create GitLab Toolbox S3cmd Secret
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ gitlab_toolbox_s3cmd_secret }}"
+        namespace: "{{ gitlab_namespace }}"
+      type: Opaque
+      stringData:
+        config: |
+          [default]
+          access_key = {{ gitlab_object_storage_config.aws_access_key_id }}
+          secret_key = {{ gitlab_object_storage_config.aws_secret_access_key }}
+          host_base = {{ gitlab_object_storage_config.endpoint | regex_replace('^https?://', '') }}
+          host_bucket = {{ gitlab_object_storage_config.endpoint | regex_replace('^https?://', '') }}
+          use_https = False
+  no_log: true
+
+- name: Verify GitLab Toolbox S3cmd Secret
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: "{{ gitlab_namespace }}"
+    name: "{{ gitlab_toolbox_s3cmd_secret }}"
+  register: gitlab_toolbox_s3cmd_secret_info
+  failed_when:
+    - gitlab_toolbox_s3cmd_secret_info.resources | length != 1

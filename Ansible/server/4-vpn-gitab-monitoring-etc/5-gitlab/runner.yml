@@ -1,0 +1,20 @@
+---
+- name: Deploy GitLab Runner managers
+  hosts: servers
+  become: true
+  gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../group_vars/all.yml"
+    - "{{ playbook_dir }}/../group_vars/secrets.yml"
+
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+
+  tasks:
+    - name: Configure every GitLab Runner
+      ansible.builtin.include_tasks:
+        file: tasks/runner.yml
+      loop: "{{ runners }}"
+      loop_control:
+        loop_var: runner_config
+        label: "{{ runner_config.name }}"

@@ -1,0 +1,106 @@
+---
+# ============================================================
+# Exposure
+# ============================================================
+
+expose:
+  type: ingress
+
+  tls:
+    enabled: true
+    certSource: secret
+
+    secret:
+      secretName: "{{ harbor_tls_secret }}"
+
+  ingress:
+    className: "cilium"
+
+    hosts:
+      core: "{{ harbor_domain }}"
+
+    annotations:
+      ingress.cilium.io/loadbalancer-mode: "shared"
+
+# ============================================================
+# External URL
+# ============================================================
+
+externalURL: "{{ harbor_external_url }}"
+
+# ============================================================
+# Authentication
+# ============================================================
+
+harborAdminPassword: ""
+
+existingSecretAdminPassword: "{{ harbor_admin_password_secret }}"
+existingSecretAdminPasswordKey: "{{ harbor_admin_password_key }}"
+
+# ============================================================
+# Harbor encryption key
+# ============================================================
+
+existingSecretSecretKey: "{{ harbor_core_secret_name }}"
+
+# ============================================================
+# Persistence
+# ============================================================
+
+persistence:
+  enabled: true
+  resourcePolicy: keep
+
+  persistentVolumeClaim:
+
+    registry:
+      storageClass: "{{ storage_class }}"
+      accessMode: ReadWriteOnce
+      size: "{{ harbor_registry_storage_size }}"
+
+    jobservice:
+      jobLog:
+        storageClass: "{{ storage_class }}"
+        accessMode: ReadWriteOnce
+        size: "1Gi"
+
+    database:
+      storageClass: "{{ storage_class }}"
+      accessMode: ReadWriteOnce
+      size: "{{ harbor_database_storage_size }}"
+
+    redis:
+      storageClass: "{{ storage_class }}"
+      accessMode: ReadWriteOnce
+      size: "{{ harbor_redis_storage_size }}"
+
+    trivy:
+      storageClass: "{{ storage_class }}"
+      accessMode: ReadWriteOnce
+      size: "{{ harbor_trivy_storage_size }}"
+
+# ============================================================
+# Update strategy
+# ============================================================
+
+updateStrategy:
+  type: Recreate
+
+# ============================================================
+# Components
+# ============================================================
+
+core:
+  replicas: {{ harbor_core_replicas }}
+
+portal:
+  replicas: {{ harbor_portal_replicas }}
+
+registry:
+  replicas: {{ harbor_registry_replicas }}
+
+jobservice:
+  replicas: {{ harbor_jobservice_replicas }}
+
+trivy:
+  replicas: {{ harbor_trivy_replicas }}

@@ -1,0 +1,224 @@
+---
+# ============================================================
+# Validation
+# ============================================================
+
+- name: Validate Harbor configuration
+  ansible.builtin.assert:
+    that:
+      - harbor_namespace is defined
+      - harbor_namespace | length > 0
+      - harbor_release is defined
+      - harbor_release | length > 0
+      - harbor_domain is defined
+      - harbor_domain | length > 0
+      - harbor_external_url is defined
+      - harbor_external_url | length > 0
+      - harbor_chart_repo is defined
+      - harbor_chart_repo | length > 0
+      - harbor_chart is defined
+      - harbor_chart | length > 0
+      - harbor_chart_version is defined
+      - harbor_chart_version | length > 0
+      - storage_class is defined
+      - storage_class | length > 0
+      - harbor_tls_secret is defined
+      - harbor_tls_secret | length > 0
+      - cert_manager_cluster_issuer is defined
+      - cert_manager_cluster_issuer | length > 0
+      - harbor_admin_password_secret is defined
+      - harbor_admin_password_secret | length > 0
+      - harbor_admin_password_key is defined
+      - harbor_admin_password_key | length > 0
+      - harbor_core_secret_name is defined
+      - harbor_core_secret_name | length > 0
+      - harbor_core_secret_key is defined
+      - harbor_core_secret_key | length > 0
+      - vault_harbor_admin_password is defined
+      - vault_harbor_admin_password | length > 0
+      - vault_harbor_core_secret is defined
+      - vault_harbor_core_secret | length == 16
+    fail_msg: "Invalid Harbor configuration."
+
+# ============================================================
+# Helm repository
+# ============================================================
+
+- name: Add Harbor Helm repository
+  ansible.builtin.command:
+    cmd: >
+      helm repo add harbor
+      "{{ harbor_chart_repo }}"
+      --force-update
+  changed_when: false
+
+- name: Update Helm repositories
+  ansible.builtin.command:
+    cmd: helm repo update
+  changed_when: false
+
+# ============================================================
+# Namespace
+# ============================================================
+
+- name: Check Harbor namespace
+  ansible.builtin.command:
+    cmd: >
+      kubectl get namespace "{{ harbor_namespace }}"
+  register: harbor_namespace_check
+  changed_when: false
+  failed_when: false
+
+- name: Create Harbor namespace
+  ansible.builtin.command:
+    cmd: >
+      kubectl create namespace "{{ harbor_namespace }}"
+  when: harbor_namespace_check.rc != 0
+
+# ============================================================
+# Harbor secrets
+# ============================================================
+
+- name: Create Harbor admin password Secret
+  ansible.builtin.shell: |
+    kubectl create secret generic "{{ harbor_admin_password_secret }}" \
+      --namespace "{{ harbor_namespace }}" \
+      --from-literal="{{ harbor_admin_password_key }}={{ vault_harbor_admin_password }}" \
+      --dry-run=client \
+      -o yaml | kubectl apply -f -
+  register: harbor_admin_secret_result
+  changed_when: >
+    'created' in harbor_admin_secret_result.stdout or
+    'configured' in harbor_admin_secret_result.stdout
+  no_log: true
+
+- name: Create Harbor encryption Secret
+  ansible.builtin.shell: |
+    kubectl create secret generic "{{ harbor_core_secret_name }}" \
+      --namespace "{{ harbor_namespace }}" \
+      --from-literal="{{ harbor_core_secret_key }}={{ vault_harbor_core_secret }}" \
+      --dry-run=client \
+      -o yaml | kubectl apply -f -
+  register: harbor_core_secret_result
+  changed_when: >
+    'created' in harbor_core_secret_result.stdout or
+    'configured' in harbor_core_secret_result.stdout
+  no_log: true
+
+# ============================================================
+# TLS
+# ============================================================
+
+- name: Create Harbor TLS Certificate
+  ansible.builtin.shell: |
+    cat <<EOF | kubectl apply -f -
+    apiVersion: cert-manager.io/v1
+    kind: Certificate
+    metadata:
+      name: {{ harbor_tls_secret }}
+      namespace: {{ harbor_namespace }}
+    spec:
+      secretName: {{ harbor_tls_secret }}
+      issuerRef:
+        name: {{ cert_manager_cluster_issuer }}
+        kind: ClusterIssuer
+      dnsNames:
+        - {{ harbor_domain }}
+    EOF
+  register: harbor_certificate
+  changed_when: >
+    'created' in harbor_certificate.stdout or
+    'configured' in harbor_certificate.stdout
+
+- name: Wait for Harbor TLS Certificate
+  ansible.builtin.command:
+    cmd: >
+      kubectl wait
+      --for=condition=Ready
+      certificate/{{ harbor_tls_secret }}
+      -n "{{ harbor_namespace }}"
+      --timeout=600s
+  changed_when: false
+
+# ============================================================
+# Render Helm values
+# ============================================================
+
+- name: Render Harbor values
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../templates/harbor/values.yaml.j2"
+    dest: "/tmp/{{ harbor_release }}-values.yaml"
+    mode: "0600"
+  no_log: true
+
+# ============================================================
+# Install / Upgrade
+# ============================================================
+
+- name: Install or upgrade Harbor
+  ansible.builtin.command:
+    cmd: >
+      helm upgrade --install
+      "{{ harbor_release }}"
+      harbor/{{ harbor_chart }}
+      --namespace "{{ harbor_namespace }}"
+      --version "{{ harbor_chart_version }}"
+      --values "/tmp/{{ harbor_release }}-values.yaml"
+      --wait
+      --timeout 15m
+  register: harbor_helm_result
+  changed_when: >
+    'STATUS: deployed' in harbor_helm_result.stdout or
+    'STATUS: upgraded' in harbor_helm_result.stdout
+  no_log: true
+
+# ============================================================
+# Cleanup
+# ============================================================
+
+- name: Remove temporary Harbor values
+  ansible.builtin.file:
+    path: "/tmp/{{ harbor_release }}-values.yaml"
+    state: absent
+
+# ============================================================
+# Verification
+# ============================================================
+
+- name: Show Harbor Helm release
+  ansible.builtin.command:
+    cmd: >
+      helm list
+      -n "{{ harbor_namespace }}"
+  register: harbor_releases
+  changed_when: false
+
+- name: Show Harbor pods
+  ansible.builtin.command:
+    cmd: >
+      kubectl get pods
+      -n "{{ harbor_namespace }}"
+      -o wide
+  register: harbor_pods
+  changed_when: false
+
+- name: Show Harbor ingress
+  ansible.builtin.command:
+    cmd: >
+      kubectl get ingress
+      -n "{{ harbor_namespace }}"
+      -o wide
+  register: harbor_ingress
+  changed_when: false
+
+- name: Print Harbor Helm release
+  ansible.builtin.debug:
+    var: harbor_releases.stdout_lines
+
+- name: Print Harbor pods
+  ansible.builtin.debug:
+    var: harbor_pods.stdout_lines
+
+- name: Print Harbor ingress
+  ansible.builtin.debug:
+    var: harbor_ingress.stdout_lines

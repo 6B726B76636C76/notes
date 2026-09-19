@@ -1,0 +1,250 @@
+---
+- name: Configure UFW perimeter policy
+  hosts: servers
+  become: true
+  gather_facts: false
+
+  vars_files:
+    - ../group_vars/all.yml
+
+  collections:
+    - community.general
+
+  tasks:
+
+    # ============================================================
+    # Packages
+    # ============================================================
+
+    - name: Install UFW
+      ansible.builtin.apt:
+        name: ufw
+        state: present
+        update_cache: true
+
+    # ============================================================
+    # UFW defaults
+    # ============================================================
+
+    - name: Set default incoming policy
+      community.general.ufw:
+        direction: incoming
+        policy: deny
+
+    - name: Set default outgoing policy
+      community.general.ufw:
+        direction: outgoing
+        policy: allow
+
+    - name: Set default forwarding policy for Kubernetes and VPN routing
+      ansible.builtin.lineinfile:
+        path: /etc/default/ufw
+        regexp: '^DEFAULT_FORWARD_POLICY='
+        line: 'DEFAULT_FORWARD_POLICY="ACCEPT"'
+      notify: Reload UFW
+
+    # ============================================================
+    # Public / VPN entry points
+    # ============================================================
+
+    - name: Allow WireGuard
+      community.general.ufw:
+        rule: allow
+        port: "{{ wg_port }}"
+        proto: udp
+
+    - name: Allow public ingress ports
+      community.general.ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop: "{{ public_ingress_ports }}"
+
+    # ============================================================
+    # VPS SSH
+    # ============================================================
+
+    - name: Allow direct SSH fallback from trusted external IP
+      community.general.ufw:
+        rule: allow
+        from_ip: "{{ my_ip }}"
+        port: "22"
+        proto: tcp
+
+    # ============================================================
+    # ADMIN
+    # Full TCP access to host
+    # ============================================================
+
+    - name: Allow unrestricted TCP from ADMIN WireGuard subnet
+      community.general.ufw:
+        rule: allow
+        from_ip: "{{ admin_subnet }}"
+        proto: tcp
+      when: admin_all_tcp | bool
+
+    # ============================================================
+    # DEVELOPERS
+    # GitLab SSH + private web
+    # No VPS SSH
+    # ============================================================
+
+    - name: Allow developer host services
+      community.general.ufw:
+        rule: allow
+        from_ip: "{{ limited_subnet }}"
+        port: "{{ item }}"
+        proto: tcp
+      loop: "{{ developer_ports }}"
+
+    # ============================================================
+    # HTTP ONLY
+    # ============================================================
+
+    - name: Allow HTTP ONLY ports
+      community.general.ufw:
+        rule: allow
+        from_ip: "{{ http_only_subnet }}"
+        port: "{{ item }}"
+        proto: tcp
+      loop: "{{ http_only_ports }}"
+
+    # ============================================================
+    # Private DNS
+    # ============================================================
+
+    - name: Allow private DNS from all WireGuard tiers
+      community.general.ufw:
+        rule: allow
+        direction: in
+        interface: wg0
+        from_ip: "{{ item.0 }}"
+        to_ip: "172.16.0.1"
+        port: "53"
+        proto: "{{ item.1 }}"
+      loop: >-
+        {{
+          [admin_subnet, limited_subnet, http_only_subnet]
+          | product(['udp', 'tcp'])
+          | list
+        }}
+
+    # ============================================================
+    # Kubernetes API / private gateway
+    # ============================================================
+
+    - name: Allow Kubernetes Pods to reach private HTTPS gateway
+      community.general.ufw:
+        rule: allow
+        from_ip: "{{ kube_pod_cidr }}"
+        port: "{{ private_web_port }}"
+        proto: tcp
+
+    - name: Allow Kubernetes API from Pod CIDR
+      community.general.ufw:
+        rule: allow
+        from_ip: "{{ kube_pod_cidr }}"
+        port: "6443"
+        proto: tcp
+
+    - name: Allow Kubernetes API from localhost
+      community.general.ufw:
+        rule: allow
+        from_ip: "127.0.0.1"
+        port: "6443"
+        proto: tcp
+
+    # ============================================================
+    # Prometheus -> node / Kubernetes component metrics
+    #
+    # These endpoints are exposed on the Kubernetes node itself.
+    # Access is restricted to the Kubernetes Pod CIDR.
+    #
+    # 9962 - Cilium agent
+    # 9963 - Cilium operator
+    # 9964 - Cilium Envoy
+    # 7472 - MetalLB
+    # 10250 - kubelet
+    # 10257 - kube-controller-manager
+    # 10259 - kube-scheduler
+    # 2381 - etcd
+    #
+    # node_exporter :9100 is managed separately by
+    # configure-host-monitoring.yml.
+    # ============================================================
+
+    - name: Allow Prometheus to scrape Kubernetes component metrics
+      community.general.ufw:
+        rule: allow
+        from_ip: "{{ kube_pod_cidr }}"
+        port: "{{ item }}"
+        proto: tcp
+      loop:
+        - "7472"
+        - "9962"
+        - "9963"
+        - "9964"
+        - "10250"
+        - "10257"
+        - "10259"
+        - "2381"
+
+    # ============================================================
+    # IPv4 forwarding for WireGuard routing
+    # ============================================================
+
+    - name: Enable IPv4 forwarding
+      ansible.builtin.sysctl:
+        name: net.ipv4.ip_forward
+        value: "1"
+        state: present
+        reload: true
+
+    # ============================================================
+    # Public connection limit
+    # ============================================================
+
+    - name: Configure public connection limit
+      ansible.builtin.blockinfile:
+        path: /etc/ufw/before.rules
+        marker: "# {mark} ANSIBLE MANAGED CONNLIMIT"
+        insertbefore: "^COMMIT$"
+        block: |
+          -A ufw-before-input -p tcp --dport 80 -m connlimit --connlimit-above {{ connlimit_above }} --connlimit-mask 32 -j DROP
+          -A ufw-before-input -p tcp --dport 443 -m connlimit --connlimit-above {{ connlimit_above }} --connlimit-mask 32 -j DROP
+      notify: Reload UFW
+
+    # ============================================================
+    # WireGuard NAT
+    #
+    # Persistent UFW NAT rules for all WireGuard access tiers.
+    # This provides Internet egress for full-tunnel clients.
+    # ============================================================
+
+    - name: Configure WireGuard NAT rules
+      ansible.builtin.blockinfile:
+        path: /etc/ufw/before.rules
+        marker: "# {mark} ANSIBLE MANAGED WIREGUARD NAT"
+        insertbefore: '^\*filter$'
+        block: |
+          *nat
+          :POSTROUTING ACCEPT [0:0]
+          {% for subnet in wg_nat_subnets %}
+          -A POSTROUTING -s {{ subnet }} -o {{ vpn_nat_interface }} -j MASQUERADE
+          {% endfor %}
+          COMMIT
+      notify: Reload UFW
+
+    # ============================================================
+    # Enable UFW
+    # ============================================================
+
+    - name: Enable UFW
+      community.general.ufw:
+        state: enabled
+
+  handlers:
+
+    - name: Reload UFW
+      community.general.ufw:
+        state: reloaded

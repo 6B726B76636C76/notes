@@ -1,0 +1,364 @@
+---
+# ============================================================
+# WireGuard
+# ============================================================
+
+# Fixed WireGuard access tiers. Keep these CIDRs unchanged.
+my_ip: "176.31.31.31/32"
+wg_port: 51820
+
+admin_subnet: "172.16.0.0/27"
+limited_subnet: "172.16.1.0/24"       # Developers
+http_only_subnet: "172.16.8.0/21"
+
+wg_interface: "wg0"
+wg_server_address: "172.16.0.1/27"
+wg_dns_address: "172.16.0.1"
+vpn_mtu: 1380
+vpn_nat_interface: "eth0"
+
+wg_peers:
+  - id: "001"
+    name: "vaclav"
+    group: "admin"
+    address: "172.16.0.2"
+    persistent_keepalive: 25
+
+  - id: "002"
+    name: "vaclav-mobile"
+    group: "developers"
+    address: "172.16.1.2"
+    persistent_keepalive: 25
+
+wg_nat_subnets:
+  - "172.16.0.0/27"
+  - "172.16.1.0/24"
+  - "172.16.8.0/21"
+
+
+# ============================================================
+# Host / Public Networking
+# ============================================================
+
+public_ip: "21.221.21.221"
+
+public_ingress_ports:
+  - 80
+  - 443
+
+
+# ============================================================
+# Access Policy
+# ============================================================
+
+admin_all_tcp: true
+
+developer_ports:
+  - 2424
+  - 8443
+
+http_only_ports:
+  - 80
+  - 443
+
+private_web_port: 8443
+
+gitlab_ssh_port: 2424
+gitlab_ssh_external_ip: "21.221.21.221"
+private_ingress_nodeport_https: 30443
+private_ingress_nodeport_grafana: 30444
+private_ingress_nodeport_ssh: 30424
+
+connlimit_above: 20
+
+
+# ============================================================
+# Private DNS
+# ============================================================
+
+private_dns_bind_address: "172.16.0.1"
+private_dns_domain: "domain.com"
+
+private_dns_records:
+  - name: "grafana.domain.com"
+    address: "21.221.21.221"
+
+  - name: "gitlab.domain.com"
+    address: "21.221.21.221"
+
+  - name: "argocd.domain.com"
+    address: "21.221.21.221"
+
+  - name: "registry.domain.com"
+    address: "21.221.21.221"
+
+private_dns_upstreams:
+  - "1.1.1.1"
+  - "9.9.9.9"
+
+
+# ============================================================
+# Kubernetes
+# ============================================================
+
+kube_pod_cidr: "10.244.0.0/16"
+kubeconfig_path: "/etc/kubernetes/admin.conf"
+
+namespace_monitoring: "monitoring"
+namespace_dev: "dev"
+namespace_staging: "staging"
+namespace_prod: "prod"
+
+storage_class: "local-path"
+
+
+# ============================================================
+# GitLab
+# ============================================================
+
+gitlab_namespace: "vps"
+gitlab_release: "gitlab"
+
+gitlab_chart_repo: "https://charts.gitlab.io"
+gitlab_chart_version: "10.3.2"
+
+gitlab_domain: "gitlab.domain.com"
+
+# External endpoint used by the surrounding reverse-proxy setup.
+gitlab_external_url: "https://gitlab.domain.com:8443"
+
+gitlab_edition: "ce"
+gitlab_toolbox_s3cmd_secret: "garage-gitlab-object-storage-s3cmd"
+cert_manager_cluster_issuer: "letsencrypt-cloudflare"
+gitlab_tls_secret: "gitlab-tls"
+
+# External object storage.
+gitlab_object_storage_secret: "gitlab-rails-storage"
+gitlab_object_storage_key: "connection"
+
+# External PostgreSQL.
+gitlab_postgres_service: "gitlab-postgres-rw"
+gitlab_postgres_database: "gitlabhq_production"
+gitlab_postgres_username: "gitlab"
+gitlab_postgres_password_secret: "gitlab-postgres-password"
+gitlab_postgres_password_key: "psql-password"
+gitlab_postgres_cluster: "gitlab-postgres"
+gitlab_postgres_storage_size: "8Gi"
+gitlab_postgres_instances: 1
+gitlab_postgres_image: "ghcr.io/cloudnative-pg/postgresql:17-minimal-trixie"
+
+# External Valkey.
+gitlab_valkey_service: "gitlab-valkey"
+gitlab_redis_password_secret: "gitlab-redis"
+gitlab_redis_password_key: "redis-password"
+gitlab_valkey_release: "gitlab-valkey"
+gitlab_valkey_chart_repo: "https://valkey.io/valkey-helm/"
+gitlab_valkey_chart_version: "0.11.0"
+gitlab_valkey_image_tag: "7.2.14"
+
+gitlab_valkey_storage_size: "2Gi"
+
+# GitLab Webservice.
+# GitLab chart 10.3.2 requires at least 2 Puma workers.
+gitlab_webservice_workers: 2
+gitlab_webservice_request_memory: "1.5Gi"
+gitlab_webservice_limit_memory: "2.5Gi"
+
+# Sidekiq.
+gitlab_sidekiq_request_memory: "500Mi"
+gitlab_sidekiq_limit_memory: "800Mi"
+
+# Gitaly.
+gitlab_gitaly_request_memory: "300Mi"
+gitlab_gitaly_limit_memory: "700Mi"
+gitlab_gitaly_storage_size: "20Gi"
+
+# Toolbox.
+gitlab_toolbox_request_memory: "200Mi"
+gitlab_toolbox_limit_memory: "400Mi"
+
+# Reserved for your PostgreSQL role.
+postgres_storage_size: "8Gi"
+
+
+# ============================================================
+# GitLab Runners
+# ============================================================
+
+# Kubernetes namespace where Runner managers and CI job pods live.
+gitlab_runner_namespace: "gitlab-runner"
+
+# Explicit alias for CI job namespace.
+runner_job_namespace: "gitlab-runner"
+
+# Resource target for Runner manager pods.
+runner_request_memory: "100Mi"
+runner_limit_memory: "300Mi"
+
+# Resource target for CI job containers.
+runner_job_request_memory: "256Mi"
+runner_job_limit_memory: "1Gi"
+
+runner_job_cpu_request: "100m"
+runner_job_cpu_limit: "1000m"
+
+# Private access to GitLab from inside Kubernetes.
+runner_gitlab_host_alias_ip: "172.16.0.1"
+
+# Runner Helm chart.
+gitlab_runner_chart_repo: "https://charts.gitlab.io"
+gitlab_runner_chart_version: "0.93.0"
+
+runner_gitlab_url: "https://gitlab.domain.com"
+
+# CI images.
+runner_debian_image: "debian:13-slim"
+
+runner_dind_job_image: "docker:27.5.1-cli"
+runner_dind_service_image: "docker:27.5.1-dind"
+
+# ============================================================
+# Runner managers
+# ============================================================
+
+runners:
+
+  # Debian 13 Runner #1
+  - name: "runner-debian-01"
+    token: "{{ vault_runner_01_token }}"
+    concurrent: 1
+    image: "{{ runner_debian_image }}"
+    privileged: false
+
+  # Debian 13 Runner #2
+  - name: "runner-debian-02"
+    token: "{{ vault_runner_02_token }}"
+    concurrent: 1
+    image: "{{ runner_debian_image }}"
+    privileged: false
+
+  # Docker-in-Docker Runner
+  - name: "runner-dind-01"
+    token: "{{ vault_runner_03_token }}"
+    concurrent: 1
+    image: "{{ runner_dind_job_image }}"
+    privileged: true
+    dind: true
+
+
+# ============================================================
+# Harbor
+# ============================================================
+
+harbor_domain: "registry.domain.com"
+harbor_namespace: "harbor"
+harbor_release: "harbor"
+
+harbor_chart_repo: "https://helm.goharbor.io"
+harbor_chart: "harbor"
+harbor_chart_version: "1.19.2"
+
+harbor_external_url: "https://{{ harbor_domain }}"
+
+harbor_tls_secret: "harbor-tls"
+
+harbor_admin_password_secret: "harbor-admin-password"
+harbor_admin_password_key: "HARBOR_ADMIN_PASSWORD"
+
+# Harbor core encryption secret must contain exactly 16 chars.
+harbor_core_secret_name: "harbor-core-secret"
+harbor_core_secret_key: "secretKey"
+
+# Persistent storage.
+harbor_registry_storage_size: "10Gi"
+harbor_database_storage_size: "5Gi"
+harbor_redis_storage_size: "1Gi"
+harbor_trivy_storage_size: "5Gi"
+
+# One Kubernetes node = no real HA.
+# We can still run extra stateless replicas.
+harbor_core_replicas: 2
+harbor_portal_replicas: 2
+harbor_registry_replicas: 1
+harbor_jobservice_replicas: 1
+harbor_trivy_replicas: 1
+
+# Harbor project used by CI.
+harbor_project: "ci"
+
+
+# ============================================================
+# Monitoring
+# ============================================================
+
+grafana_tls_secret: "grafana-tls"
+
+grafana_request_memory: "200Mi"
+grafana_limit_memory: "500Mi"
+
+prometheus_request_memory: "300Mi"
+prometheus_limit_memory: "900Mi"
+
+kube_prometheus_stack_chart_repo: "https://prometheus-community.github.io/helm-charts"
+kube_prometheus_stack_chart: "kube-prometheus-stack"
+kube_prometheus_stack_version: ""
+
+# ============================================================
+# Grafana Alerting
+# ============================================================
+
+grafana_alerting_namespace: "monitoring"
+grafana_alerting_release: "monitoring"
+
+grafana_alerting_configmap: "grafana-alerting"
+grafana_alerting_telegram_secret: "grafana-telegram"
+grafana_persistence_enabled: true
+
+grafana_alerting_prometheus_datasource_uid: "prometheus"
+grafana_persistence_storage_class: "local-path"
+grafana_persistence_size: "2Gi"
+grafana_alerting_folder: "Infrastructure"
+grafana_alerting_interval: "60s"
+
+grafana_alerting_config_dir: "/tmp/grafana-alerting"
+
+# ============================================================
+# Developer Service Policies
+# ============================================================
+
+developer_service_policies:
+  # Example:
+  #
+  # - name: "postgres-dev"
+  #   namespace: "dev"
+  #   selector:
+  #     app.kubernetes.io/name: "postgres-dev"
+  #   ports:
+  #     - 5432
+
+
+# ============================================================
+# Argo CD
+# ============================================================
+
+argocd_namespace: "argocd"
+argocd_release: "argocd"
+
+argocd_chart_repo: "https://argoproj.github.io/argo-helm"
+argocd_chart: "argo-cd"
+argocd_chart_version: "10.9.2"
+
+argocd_domain: "argocd.domain.com"
+argocd_tls_secret: "argocd-tls"
+
+argocd_git_repository: "http://gitlab-webservice-default.vps.svc:8181/devops/gitops.git"
+argocd_git_revision: "main"
+argocd_git_private_key: "{{ vault_argocd_git_private_key }}"
+
+argocd_git_auth_method: "https"
+argocd_gitlab_ssh_known_host: ""
+argocd_git_username: "oauth2"
+argocd_git_password: "{{ vault_argocd_git_token }}"
+argocd_git_credential_prefix: "http://gitlab-webservice-default.vps.svc:8181/devops/"
+argocd_vaclav_username: "vaclav"
+argocd_vaclav_password_salt: "Q7m3Kp9Lx2Vn8Rd4Ws6YtP"

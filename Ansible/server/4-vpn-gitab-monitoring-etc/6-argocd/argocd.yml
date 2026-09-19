@@ -1,0 +1,22 @@
+---
+# ============================================================
+# Argo CD
+# ============================================================
+
+- name: Deploy Argo CD
+  hosts: servers
+  become: true
+  gather_facts: false
+
+  vars_files:
+    - "{{ playbook_dir }}/../group_vars/all.yml"
+    - "{{ playbook_dir }}/../group_vars/secrets.yml"
+
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+
+  tasks:
+
+    - name: Configure Argo CD
+      ansible.builtin.include_tasks:
+        file: tasks/argocd.yml

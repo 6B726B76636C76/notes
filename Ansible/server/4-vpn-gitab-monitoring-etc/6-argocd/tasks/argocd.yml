@@ -1,0 +1,236 @@
+---
+# ============================================================
+# Validation
+# ============================================================
+
+- name: Validate Argo CD configuration
+  ansible.builtin.assert:
+    that:
+      - argocd_namespace is defined
+      - argocd_namespace | length > 0
+      - argocd_release is defined
+      - argocd_release | length > 0
+      - argocd_chart_repo is defined
+      - argocd_chart_repo | length > 0
+      - argocd_chart is defined
+      - argocd_chart | length > 0
+      - argocd_chart_version is defined
+      - argocd_chart_version | length > 0
+      - argocd_domain is defined
+      - argocd_domain | length > 0
+      - argocd_tls_secret is defined
+      - argocd_tls_secret | length > 0
+      - cert_manager_cluster_issuer is defined
+      - cert_manager_cluster_issuer | length > 0
+      - argocd_vaclav_username is defined
+      - argocd_vaclav_username | length > 0
+      - vault_argocd_vaclav_password is defined
+      - vault_argocd_vaclav_password | length > 0
+      - argocd_vaclav_password_salt is defined
+      - argocd_vaclav_password_salt | length == 22
+    fail_msg: "Invalid Argo CD configuration."
+
+# ============================================================
+# Helm repository
+# ============================================================
+
+- name: Add Argo CD Helm repository
+  ansible.builtin.command:
+    cmd: >
+      helm repo add argo
+      "{{ argocd_chart_repo }}"
+      --force-update
+  changed_when: false
+
+- name: Update Helm repositories
+  ansible.builtin.command:
+    cmd: helm repo update
+  changed_when: false
+
+# ============================================================
+# Namespace
+# ============================================================
+
+- name: Check Argo CD namespace
+  ansible.builtin.command:
+    cmd: >
+      kubectl get namespace "{{ argocd_namespace }}"
+  register: argocd_namespace_check
+  changed_when: false
+  failed_when: false
+
+- name: Create Argo CD namespace
+  ansible.builtin.command:
+    cmd: >
+      kubectl create namespace "{{ argocd_namespace }}"
+  when: argocd_namespace_check.rc != 0
+
+# ============================================================
+# TLS
+# ============================================================
+
+- name: Create Argo CD TLS Certificate
+  ansible.builtin.shell: |
+    cat <<EOF | kubectl apply -f -
+    apiVersion: cert-manager.io/v1
+    kind: Certificate
+    metadata:
+      name: {{ argocd_tls_secret }}
+      namespace: {{ argocd_namespace }}
+    spec:
+      secretName: {{ argocd_tls_secret }}
+      issuerRef:
+        name: {{ cert_manager_cluster_issuer }}
+        kind: ClusterIssuer
+      dnsNames:
+        - {{ argocd_domain }}
+    EOF
+  register: argocd_certificate
+  changed_when: >
+    'created' in argocd_certificate.stdout or
+    'configured' in argocd_certificate.stdout
+
+- name: Wait for Argo CD TLS Certificate
+  ansible.builtin.command:
+    cmd: >
+      kubectl wait
+      --for=condition=Ready
+      certificate/{{ argocd_tls_secret }}
+      -n "{{ argocd_namespace }}"
+      --timeout=600s
+  changed_when: false
+
+# ============================================================
+# Render values
+# ============================================================
+
+- name: Render Argo CD values
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../templates/argocd/values.yaml.j2"
+    dest: "/tmp/{{ argocd_release }}-values.yaml"
+    mode: "0600"
+  no_log: true
+
+# ============================================================
+# Install / Upgrade
+# ============================================================
+
+- name: Install or upgrade Argo CD
+  ansible.builtin.command:
+    cmd: >
+      helm upgrade --install
+      "{{ argocd_release }}"
+      argo/{{ argocd_chart }}
+      --namespace "{{ argocd_namespace }}"
+      --version "{{ argocd_chart_version }}"
+      --values "/tmp/{{ argocd_release }}-values.yaml"
+      --wait
+      --timeout 15m
+  register: argocd_helm_result
+  changed_when: >
+    'STATUS: deployed' in argocd_helm_result.stdout or
+    'STATUS: upgraded' in argocd_helm_result.stdout
+  no_log: true
+
+- name: Configure GitLab repository credentials
+  ansible.builtin.shell: |
+    cat <<EOF | kubectl apply -f -
+    apiVersion: v1
+    kind: Secret
+    metadata:
+      name: gitlab-repo-creds
+      namespace: {{ argocd_namespace }}
+      labels:
+        argocd.argoproj.io/secret-type: repo-creds
+    stringData:
+      type: git
+      url: "{{ argocd_git_credential_prefix }}"
+      username: "{{ argocd_git_username }}"
+      password: "{{ argocd_git_password }}"
+    EOF
+  no_log: true
+
+# ============================================================
+# Bootstrap GitOps Application
+# ============================================================
+
+- name: Configure Argo CD bootstrap Application
+  ansible.builtin.command:
+    cmd: kubectl apply -f -
+    stdin: |
+      apiVersion: argoproj.io/v1alpha1
+      kind: Application
+      metadata:
+        name: gitops-root
+        namespace: {{ argocd_namespace }}
+      spec:
+        project: default
+
+        source:
+          repoURL: "{{ argocd_git_repository }}"
+          targetRevision: "{{ argocd_git_revision }}"
+          path: root
+
+        destination:
+          server: https://kubernetes.default.svc
+          namespace: {{ argocd_namespace }}
+
+        syncPolicy:
+          automated:
+            prune: true
+            selfHeal: true
+  register: argocd_bootstrap_application
+  changed_when: >
+    'created' in argocd_bootstrap_application.stdout
+    or 'configured' in argocd_bootstrap_application.stdout
+
+# ============================================================
+# Cleanup
+# ============================================================
+
+- name: Remove temporary Argo CD values
+  ansible.builtin.file:
+    path: "/tmp/{{ argocd_release }}-values.yaml"
+    state: absent
+
+# ============================================================
+# Verification
+# ============================================================
+
+- name: Show Argo CD Helm release
+  ansible.builtin.command:
+    cmd: >
+      helm list
+      -n "{{ argocd_namespace }}"
+  register: argocd_releases
+  changed_when: false
+
+- name: Show Argo CD pods
+  ansible.builtin.command:
+    cmd: >
+      kubectl get pods
+      -n "{{ argocd_namespace }}"
+      -o wide
+  register: argocd_pods
+  changed_when: false
+
+- name: Show Argo CD ingress
+  ansible.builtin.command:
+    cmd: >
+      kubectl get ingress
+      -n "{{ argocd_namespace }}"
+      -o wide
+  register: argocd_ingress
+  changed_when: false
+
+- name: Print Argo CD Helm release
+  ansible.builtin.debug:
+    var: argocd_releases.stdout_lines
+
+- name: Print Argo CD pods
+  ansible.builtin.debug:
+    var: argocd_pods.stdout_lines
+
+- name: Print Argo CD ingress
+  ansible.builtin.debug:
+    var: argocd_ingress.stdout_lines

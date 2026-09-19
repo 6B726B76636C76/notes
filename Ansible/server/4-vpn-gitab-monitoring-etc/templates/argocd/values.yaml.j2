@@ -1,0 +1,134 @@
+---
+# ============================================================
+# Global
+# ============================================================
+
+global:
+  domain: "{{ argocd_domain }}"
+
+# ============================================================
+# Argo CD
+# ============================================================
+
+configs:
+
+  # ----------------------------------------------------------
+  # Local users
+  # ----------------------------------------------------------
+
+  cm:
+    accounts.{{ argocd_vaclav_username }}: "login"
+
+  # ----------------------------------------------------------
+  # RBAC
+  # ----------------------------------------------------------
+
+  rbac:
+    policy.default: "role:readonly"
+    policy.csv: |
+      g, {{ argocd_vaclav_username }}, role:admin
+
+  # ----------------------------------------------------------
+  # Parameters
+  # ----------------------------------------------------------
+
+  params:
+    server.insecure: "true"
+
+  # ----------------------------------------------------------
+  # SSH known hosts
+  # ----------------------------------------------------------
+
+  ssh:
+    create: true
+
+{% if argocd_gitlab_ssh_known_host | default('') | length > 0 %}
+    extraHosts: |
+{{ argocd_gitlab_ssh_known_host | indent(6, true) }}
+{% endif %}
+
+  # ----------------------------------------------------------
+  # Local user password
+  # ----------------------------------------------------------
+  #
+  # Argo CD expects local account passwords as bcrypt hashes
+  # in argocd-secret.
+  #
+  # The plaintext password exists only in Ansible Vault.
+  # The hash is generated during template rendering.
+  #
+  # Fixed salt keeps the rendered hash stable between runs.
+  #
+
+  secret:
+    extra:
+      accounts.{{ argocd_vaclav_username }}.password: "{{ vault_argocd_vaclav_password | password_hash('bcrypt', argocd_vaclav_password_salt, rounds=10, ident='2a') }}"
+
+  # ----------------------------------------------------------
+  # Git repositories
+  # ----------------------------------------------------------
+
+{% if argocd_git_private_key | default('') | length > 0 %}
+  repositories:
+
+    gitops:
+      url: "{{ argocd_git_repository }}"
+      type: git
+      sshPrivateKey: |
+{{ argocd_git_private_key | indent(8, true) }}
+{% else %}
+  repositories: {}
+{% endif %}
+
+# ============================================================
+# Controller
+# ============================================================
+
+controller:
+  replicas: 1
+
+# ============================================================
+# Server
+# ============================================================
+
+server:
+  replicas: 1
+
+  ingress:
+    enabled: true
+    controller: generic
+    ingressClassName: "cilium"
+
+    hostname: "{{ argocd_domain }}"
+
+    path: /
+    pathType: Prefix
+
+    extraTls:
+      - hosts:
+          - "{{ argocd_domain }}"
+        secretName: "{{ argocd_tls_secret }}"
+
+    annotations:
+      ingress.cilium.io/loadbalancer-mode: "shared"
+
+# ============================================================
+# Repository Server
+# ============================================================
+
+repoServer:
+  replicas: 1
+
+# ============================================================
+# ApplicationSet
+# ============================================================
+
+applicationSet:
+  replicas: 1
+
+# ============================================================
+# Redis
+# ============================================================
+
+redis-ha:
+  enabled: false

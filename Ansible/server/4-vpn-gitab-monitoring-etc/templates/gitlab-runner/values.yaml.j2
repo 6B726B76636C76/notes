@@ -19,6 +19,7 @@ runners:
 
       [runners.kubernetes]
         namespace = "{{ gitlab_runner_namespace }}"
+        service_account = "{{ runner_config.name }}-gitlab-runner"
         image = "{{ runner_config.image }}"
         privileged = {{ runner_config.privileged | bool | lower }}
 
